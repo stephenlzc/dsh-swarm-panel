@@ -1,0 +1,11 @@
+# cordis.patch.yml — Agent Swarm bundle patch
+# This file is the entry point for `dsh plugin --profile <name> add dsh-swarm-panel`.
+# DSH reads dsh.bundle.patch from package.json, resolves this file, and applies its insert list
+# on top of the profile's base composition.
+#
+# The Orchestrator AI tools (swarm_spawn / swarm_send_to / swarm_set_topology / swarm_list_children /
+# swarm_interrupt / swarm_terminate) are registered per-root-agent when the plugin loads.
+
+- insert:
+    - id: dsh-swarm-panel
+      name: 'dsh-swarm-panel'

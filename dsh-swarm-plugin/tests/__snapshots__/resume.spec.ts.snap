@@ -1,0 +1,117 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`swarm cold resume > rebuilds runtimes and replays history into re-spawned roles after a host kill 1`] = `
+[
+  {
+    "data": {
+      "swarmId": "chat",
+    },
+    "type": "swarm/created",
+  },
+  {
+    "data": {
+      "childId": "child-alpha",
+      "roleName": "alpha",
+      "swarmId": "chat",
+      "systemPrompt": "You are alpha.",
+    },
+    "type": "swarm/role-spawned",
+  },
+  {
+    "data": {
+      "childId": "child-beta",
+      "roleName": "beta",
+      "swarmId": "chat",
+    },
+    "type": "swarm/role-spawned",
+  },
+  {
+    "data": {
+      "content": "task one",
+      "from": "orchestrator",
+      "senderSessionId": "swarm-resume-root",
+      "swarmId": "chat",
+      "to": "alpha",
+    },
+    "type": "swarm/role-message",
+  },
+  {
+    "data": {
+      "content": "handoff",
+      "from": "alpha",
+      "senderSessionId": "swarm-resume-root",
+      "swarmId": "chat",
+      "to": "beta",
+    },
+    "type": "swarm/role-message",
+  },
+  {
+    "data": {
+      "lastSpeaker": "alpha",
+      "messageCount": 2,
+      "reason": "manual",
+      "roles": [
+        {
+          "childId": "child-alpha",
+          "roleName": "alpha",
+          "status": "running",
+        },
+        {
+          "childId": "child-beta",
+          "roleName": "beta",
+          "status": "running",
+        },
+      ],
+      "swarmId": "chat",
+      "topologyMode": "parent-child",
+      "version": 1,
+    },
+    "type": "swarm/checkpoint",
+  },
+  {
+    "data": {
+      "childId": "child-alpha-2",
+      "roleName": "alpha",
+      "swarmId": "chat",
+      "systemPrompt": "You are alpha.",
+    },
+    "type": "swarm/role-spawned",
+  },
+  {
+    "data": {
+      "childId": "child-beta-2",
+      "roleName": "beta",
+      "swarmId": "chat",
+    },
+    "type": "swarm/role-spawned",
+  },
+  {
+    "data": {
+      "roles": [
+        {
+          "action": "respawned",
+          "childId": "child-alpha-2",
+          "roleName": "alpha",
+        },
+        {
+          "action": "respawned",
+          "childId": "child-beta-2",
+          "roleName": "beta",
+        },
+      ],
+      "swarmId": "chat",
+    },
+    "type": "swarm/resumed",
+  },
+  {
+    "data": {
+      "content": "continue",
+      "from": "beta",
+      "senderSessionId": "swarm-resume-root",
+      "swarmId": "chat",
+      "to": "alpha",
+    },
+    "type": "swarm/role-message",
+  },
+]
+`;

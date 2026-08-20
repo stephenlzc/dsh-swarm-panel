@@ -1,0 +1,17 @@
+.DS_Store
+**/.DS_Store
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.env
+.env.*
+!.env.example
+coverage/
+.vite/
+dist/
+*.local
+.idea/
+.vscode/
+*.tsbuildinfo

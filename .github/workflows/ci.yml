@@ -1,0 +1,27 @@
+# dsh-swarm-panel CI. This standalone repo is not the deepseek-harness
+# monorepo. Host typecheck / vitest / tsdown still require a DSH workspace
+# for @deepseek-ai/* peers, so they are not run here.
+name: dsh-swarm-panel
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker://rhysd/actionlint:1.7.7
+        with:
+          args: -color

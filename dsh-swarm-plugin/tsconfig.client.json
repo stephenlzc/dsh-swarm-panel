@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": [],
+    "noEmit": true
+  },
+  "include": ["src/client/**/*", "src/panel-model.ts", "src/types.ts"],
+  "exclude": ["node_modules", "lib", "tests"]
+}
