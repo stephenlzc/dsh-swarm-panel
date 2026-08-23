@@ -1,14 +1,20 @@
 import { defineConfig } from 'tsdown'
 import type { UserConfig } from 'tsdown'
-import { PLATFORM_MODULES } from '../../packages/client/web/src/platform.ts'
 
 /**
- * Externals resolved from the web shell's frozen module table: the platform
- * seed entries plus the documented runtime exemption (mirrors
- * packages/client/tsdown.client.ts `CLIENT_EXTERNALS`; this plugin builds
- * straight from `src`, so it restates the list instead of importing the
- * lib/types-oriented preset).
+ * Externals resolved from the web shell's frozen module table. Restated here
+ * (instead of importing `packages/client/web/src/platform.ts`) so this plugin
+ * builds both as a harness workspace member and from the independent checkout.
  */
+const PLATFORM_MODULES = [
+  'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis',
+  '@deepseek-ai/dsh-client-ui-slots',
+  '@deepseek-ai/dsh-client-web-react',
+  '@deepseek-ai/dsh-client-ui-primitives',
+  '@deepseek-ai/dsh-client-ui-attachment',
+  '@deepseek-ai/dsh-client-schema-form',
+] as const
+
 const CLIENT_EXTERNALS: readonly string[] = [...PLATFORM_MODULES, '@deepseek-ai/dsh-client-runtime/client']
 
 /** Browser client bundle: closure-factory artifact handed to window.__ModuleLoader__. */

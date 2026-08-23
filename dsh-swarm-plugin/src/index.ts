@@ -101,6 +101,14 @@ export interface MemoryConfig {
  * Swarm plugin configuration (deployment choices, changeable from cordis.yml).
  */
 export interface Config {
+  /**
+   * Master switch: when `false`, `apply` short-circuits without registering the
+   * projection, the event vocabulary, or any per-agent effect. Defaults to
+   * `true`. The plugin leaves no detectable footprint when disabled this way
+   * (no `swarm/*` event types, no `ctx.sessionProjections.register('swarm', ...)`,
+   * no `swarm_*` tools on future root agents).
+   */
+  enabled?: boolean
   /** The `ctx.subagents` provider used to spawn children. Defaults to `spawn`. */
   provider?: string
   /** Default child model when a role does not specify one. */
@@ -288,6 +296,9 @@ const swarmPanelModelSchema = zod.union([
  * @param config - deployment config (provider, default model).
  */
 export function apply(ctx: Context, config: Config = {}): void {
+  // Master switch: when explicitly disabled, leave the runtime untouched — no
+  // projection, no event vocabulary, no per-agent effect or tool registration.
+  if (config.enabled === false) return
   const provider = config.provider ?? 'spawn'
   const checkpointFrequency = resolveCheckpointFrequency(config)
   const humanInputMode = resolveHumanInputMode(config)

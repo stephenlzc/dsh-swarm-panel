@@ -407,7 +407,7 @@ interface SwarmMemoryQueryValue {
   readonly entries: readonly SwarmMemoryHit[];
 }
 //#endregion
-//#region ../../packages/typert/protocol/lib/types/types.d.ts
+//#region ../../deepseek-harness/packages/typert/protocol/lib/types/types.d.ts
 declare const LOOKUP_HOST: unique symbol;
 declare const LOOKUP_WIRE: unique symbol;
 declare const CONTEXT_WIRE: unique symbol;
@@ -718,7 +718,7 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 //#endregion
-//#region ../../packages/core/scope/lib/types/index.d.ts
+//#region ../../deepseek-harness/packages/core/scope/lib/types/index.d.ts
 /** An opaque, identity-compared scope key. */
 type ScopeKey = object;
 declare const ScopedBrand: unique symbol;
@@ -731,7 +731,7 @@ type Scoped<T extends object> = object & {
   readonly [ScopedBrand]: T;
 };
 //#endregion
-//#region ../../packages/attachment/attachment/lib/types/brand.d.ts
+//#region ../../deepseek-harness/packages/attachment/attachment/lib/types/brand.d.ts
 /** Opaque content-addressed identifier for one immutable attachment object. */
 type AttachmentId = Branded<'AttachmentId'>;
 /**
@@ -741,7 +741,7 @@ type AttachmentId = Branded<'AttachmentId'>;
  */
 declare function AttachmentId(value: string): AttachmentId;
 //#endregion
-//#region ../../packages/attachment/attachment/lib/types/types.d.ts
+//#region ../../deepseek-harness/packages/attachment/attachment/lib/types/types.d.ts
 /** Raster image formats accepted by the version-one attachment path. */
 type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
 /** Durable, serializable metadata for one immutable image object. */
@@ -781,7 +781,7 @@ interface StoredImageAttachment {
   data: Uint8Array;
 }
 //#endregion
-//#region ../../packages/attachment/attachment/lib/types/index.d.ts
+//#region ../../deepseek-harness/packages/attachment/attachment/lib/types/index.d.ts
 declare module '@deepseek-ai/cordis' {
   interface Context {
     attachments: AttachmentStore;
@@ -824,7 +824,7 @@ declare abstract class AttachmentStore extends Service {
   abstract readImage(ref: ImageAttachmentRef, signal?: AbortSignal): Promise<StoredImageAttachment>;
 }
 //#endregion
-//#region ../../packages/llm/llm/lib/types/brand.d.ts
+//#region ../../deepseek-harness/packages/llm/llm/lib/types/brand.d.ts
 /** Stable identity carried by one message across inbox, log, and model-request boundaries. */
 type MessageId = Branded<'MessageId'>;
 /**
@@ -861,7 +861,7 @@ type ReasoningEffortId = Branded<'ReasoningEffortId'>;
  */
 declare function ReasoningEffortId(id: string): ReasoningEffortId;
 //#endregion
-//#region ../../packages/llm/llm/lib/types/message.d.ts
+//#region ../../deepseek-harness/packages/llm/llm/lib/types/message.d.ts
 /** Provider/model identity and adapter-private replay data for an assistant message. */
 interface AssistantProvenance {
   /** Provider route that produced the message. */
@@ -950,7 +950,7 @@ interface UserMessage$1 extends Message {
   readonly role: 'user';
 }
 //#endregion
-//#region ../../packages/llm/llm/lib/types/types.d.ts
+//#region ../../deepseek-harness/packages/llm/llm/lib/types/types.d.ts
 declare module '@deepseek-ai/cordis' {
   interface Events {
     /**
@@ -1309,7 +1309,7 @@ interface GenerateOptions {
   purpose?: 'compaction' | 'session-title';
 }
 //#endregion
-//#region ../../vendor/cosmokit/lib/types/types.d.ts
+//#region ../../deepseek-harness/vendor/cosmokit/lib/types/types.d.ts
 declare function isArrayBufferLike(value: any): value is ArrayBufferLike;
 declare function isArrayBufferSource(value: any): value is Binary.Source;
 /** Binary source detection and base64/hex conversion helpers. */
@@ -1324,11 +1324,11 @@ declare namespace Binary {
   function fromHex(source: string): ArrayBuffer;
 }
 //#endregion
-//#region ../../vendor/cosmokit/lib/types/misc.d.ts
+//#region ../../deepseek-harness/vendor/cosmokit/lib/types/misc.d.ts
 /** String/symbol keyed dictionary type. */
 type Dict<T = any, K extends string | symbol = string> = { [key in K]: T };
 //#endregion
-//#region ../../node_modules/.pnpm/@standard-schema+spec@1.1.0/node_modules/@standard-schema/spec/dist/index.d.ts
+//#region ../../deepseek-harness/node_modules/.pnpm/@standard-schema+spec@1.1.0/node_modules/@standard-schema/spec/dist/index.d.ts
 /** The Standard Typed interface. This is a base type extended by other specs. */
 interface StandardTypedV1<Input = unknown, Output = Input> {
   /** The Standard properties. */
@@ -1406,7 +1406,7 @@ declare namespace StandardSchemaV1 {
 }
 /** The Standard JSON Schema interface. */
 //#endregion
-//#region ../../vendor/schemastery/lib/types/index.d.ts
+//#region ../../deepseek-harness/vendor/schemastery/lib/types/index.d.ts
 declare const kSchema: unique symbol;
 declare global {
   namespace Schemastery {
@@ -1600,7 +1600,7 @@ declare class ValidationError extends TypeError {
 type Schema<S = any, T = S> = Schemastery<S, T>;
 declare const Schema: Schemastery.Static;
 //#endregion
-//#region ../../packages/llm/llm/lib/types/retry-policy.d.ts
+//#region ../../deepseek-harness/packages/llm/llm/lib/types/retry-policy.d.ts
 /** Fully resolved backoff shared by both retry modes. */
 interface ResolvedRetryBackoff {
   readonly initialDelayMs: number;
@@ -1620,7 +1620,7 @@ interface ResolvedAlwaysRetryPolicy extends ResolvedRetryBackoff {
 /** Immutable provider policy captured when its adapter route is registered. */
 type ResolvedRetryPolicy = ResolvedNormalRetryPolicy | ResolvedAlwaysRetryPolicy;
 //#endregion
-//#region ../../packages/llm/llm/lib/types/call-config.d.ts
+//#region ../../deepseek-harness/packages/llm/llm/lib/types/call-config.d.ts
 /**
  * Provider, model, reasoning effort, and sampling scalars of one conversation's
  * requests. Every field maps 1:1 onto the same-named `GenerateOptions` field;
@@ -1644,7 +1644,7 @@ interface LlmCallConfigAdapterDefaults {
   maxTokens?: true;
 }
 //#endregion
-//#region ../../packages/llm/llm/lib/types/index.d.ts
+//#region ../../deepseek-harness/packages/llm/llm/lib/types/index.d.ts
 declare module '@deepseek-ai/cordis' {
   interface Context {
     llm: LlmRuntime;
@@ -1919,7 +1919,7 @@ declare class LlmRuntime extends Service {
   private streamWithRegistration;
 }
 //#endregion
-//#region ../../packages/core/agent/lib/types/types.d.ts
+//#region ../../deepseek-harness/packages/core/agent/lib/types/types.d.ts
 /** One of the two ordered pending-message lists owned by an agent. */
 type InboxTarget = 'next-turn' | 'next-step';
 declare module '@deepseek-ai/dsh-session/types' {
@@ -1939,7 +1939,7 @@ declare module '@deepseek-ai/dsh-session/types' {
   }
 } //# sourceMappingURL=types.d.ts.map
 //#endregion
-//#region ../../packages/core/agent/lib/types/inbox.d.ts
+//#region ../../deepseek-harness/packages/core/agent/lib/types/inbox.d.ts
 /** Live notifications committed by inbox mutations. */
 interface InboxNotifications {
   /** Publish one inserted message. */
@@ -2024,7 +2024,7 @@ declare class Inbox {
   private validate;
 }
 //#endregion
-//#region ../../packages/core/agent/lib/types/runtime-types.d.ts
+//#region ../../deepseek-harness/packages/core/agent/lib/types/runtime-types.d.ts
 declare module '@deepseek-ai/dsh-system-prompt' {
   interface AssembleContext {
     /** Agent for this assembly; absent on diagnostics. When present, `scope` must identify the same agent. */
@@ -2336,7 +2336,7 @@ declare module '@deepseek-ai/cordis' {
   }
 } //# sourceMappingURL=runtime-types.d.ts.map
 //#endregion
-//#region ../../packages/core/system-prompt/lib/types/index.d.ts
+//#region ../../deepseek-harness/packages/core/system-prompt/lib/types/index.d.ts
 declare module '@deepseek-ai/cordis' {
   interface Context {
     systemPrompt: SystemPrompt;
@@ -2513,7 +2513,7 @@ declare class SystemPrompt extends Service {
   assemble(context?: AssembleContext): Promise<PromptAssembly>;
 }
 //#endregion
-//#region ../../packages/core/agent/lib/types/index.d.ts
+//#region ../../deepseek-harness/packages/core/agent/lib/types/index.d.ts
 declare module '@deepseek-ai/dsh-typert-protocol' {
   interface TypertLookupMap {
     agent: TypertLookup<Agent, SessionId>;

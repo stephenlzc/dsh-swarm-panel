@@ -36,11 +36,49 @@ dsh plugin --profile web add dsh-swarm-panel
 dsh plugin --profile web add file:./dsh-swarm-plugin
 ```
 
+## Configuration
+
+All knobs are deployment choices written to `cordis.yml` under the plugin row's
+`config:` block. They all default to safe values, so an empty `config: {}`
+activates the plugin with the documented defaults.
+
+```yaml
+# cordis.yml row config
+plugins:
+  dsh-swarm-panel:
+    $: workspace:*
+    config:
+      enabled: true # master switch: false disables every projection, tool, and effect
+      provider: spawn
+      humanInputMode: TERMINATE
+      checkpoint: { frequency: auto }
+      chat: { speakerSelection: round_robin, transcriptWindow: 10 }
+      memory: { maxEntries: 200, queryLimit: 5 }
+```
+
+- **`enabled`** (default `true`): when `false`, `apply` short-circuits without
+  registering the `swarm` projection, the `swarm/*` event vocabulary, or any
+  per-agent effect. The host side leaves no detectable footprint, and the
+  client side omits the `Swarms: N` header badge and the Conversation Flow
+  tab. Use this to keep the plugin installed while turning the panel off for
+  a specific profile. To skip the entry entirely, set the loader-level
+  `disabled: true` on the `cordis.yml` row.
+
 ## Web UI
 
-With the plugin installed in the `web` profile, ask the Orchestrator to create a swarm and spawn a role, for example: `Create a swarm named default and spawn one planner role.` Open the **Conversation Flow** tab next to Chat and Trajectory. That page is the swarm canvas: Orchestrator, role, and Human swimlanes; parent-child, peer, and group routing; filters, message details, and Live follow. The header `Swarms: N` badge is only a count. Click a role lane to open its child session.
+With the plugin installed in the `web` profile, ask the Orchestrator to create a swarm and spawn a role, for example: `Create a swarm named default and spawn one planner role.` Open the **Conversation Flow** tab next to Chat and Trajectory. That page is the swarm canvas the plugin owns (the Workspaces sidebar, Chat/Trajectory tabs, and Session log chrome stay with the host):
 
-![DeepSeek Harness Agent Swarm panel](assets/swarm-panel.png)
+- Topology strip of role icon cards with parent/child and Active / Idle·Waiting / Completed / Error (Error is its own color, not exited grey).
+- Time-grid swimlanes with vertical lane lines; compact cards sit in the sender column; routes are elbow polylines (solid `parent → child`, dashed `peer ↔ peer`). There is no destination-capsule substitute.
+- Time column shows clock time plus a `UTC±N` offset label.
+- Stacked message inspector (From/To, Route, Status, Content preview, Copy ID, Open session). Tags, token usage, and View in Trajectory are omitted because they are not on the `swarm` projection.
+- Footer: visible/total, First, Last, Duration, Live, Auto-scroll. Export is not implemented (no export data source).
+- Pending HITL in the Human lane is clickable and opens the original swarm session.
+- ArrowUp / ArrowDown / Escape apply only while the flow collection is focused.
+
+The header `Swarms: N` badge is only a count. Click a role card or lane to open its child session.
+
+![dsh-swarm-panel Conversation Flow in the DeepSeek Harness web shell](assets/swarm-panel.png)
 
 ## Tool Reference
 
@@ -170,7 +208,7 @@ config:
 
 When the host composes the session-projection seam (`ctx.sessionProjections`), the plugin registers a `swarm` projection unit that folds every `swarm/*` event into a per-session panel model (`Record<swarmId, SwarmPanelSwarm> | null`): roster and topology mode, every routed `swarm/role-message` with per-message parent/peer attribution, the group transcript, pending HITL requests, context variables, chat engine state, and the latest checkpoint/resume markers. The fold is incremental — unrelated events return the same state reference, so the change feed fires only when the panel value actually moves.
 
-The browser half ships as `dsh-swarm-panel/client` (discovered through the package.json `dsh.client` declaration): a Conversation Flow `conversation.view` tab plus a header swarm-count badge — no RPC, no client-side store, and no new model request. The tab is always listed next to Chat and Trajectory; the badge stays hidden until the session has at least one swarm. Live/Pause only follows the viewport. Each role lane opens the role's child session (`ctx.sessions.open`); opening a persisted child cold-resumes it host-side, which is how the panel triggers recovery.
+The browser half ships as `dsh-swarm-panel/client` (discovered through the package.json `dsh.client` declaration): a Conversation Flow `conversation.view` tab plus a header swarm-count badge — no RPC, no client-side store, and no new model request. The tab is always listed next to Chat and Trajectory; the badge stays hidden until the session has at least one swarm. Auto-scroll / Live only follows the viewport. Empty copy covers no swarm, waiting projection, projection error, no messages, no matches, terminated, and pending HITL. Each role lane opens the role's child session (`ctx.sessions.open`); opening a persisted child cold-resumes it host-side, which is how the panel triggers recovery.
 
 ## Known Limitations / Roadmap
 

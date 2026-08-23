@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write dsh-swarm-plugin/README.md
-README.md: e704d6548685bfd3065aa36810e6181ce791861f
-README.zh.md: 529544f042ca7adb24496bd083bd8f58aa503bd3
+README.md: 9a04836a199a0dc0438a4aeafff7f00c2275d7c3
+README.zh.md: ecb27ee5685701da1abb464d676a589a9d95f12f

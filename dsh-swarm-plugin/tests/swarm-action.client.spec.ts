@@ -11,6 +11,20 @@ import { createElement as h } from 'react'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import { SwarmAction, SwarmConversationView, SwarmPanelView, type SwarmActionProps } from '../src/client/SwarmAction.ts'
 import * as clientPlugin from '../src/client/index.ts'
+import {
+  EMPTY_NO_MATCH,
+  EMPTY_NO_MESSAGES,
+  EMPTY_NO_SWARM,
+  EMPTY_PENDING_HITL,
+  EMPTY_PROJECTION_ERROR,
+  EMPTY_TERMINATED,
+  EMPTY_WAITING_PROJECTION,
+  elbowPath,
+  emptyStateCopy,
+  formatUtcOffset,
+  roleVisualLabel,
+  roleVisualState,
+} from '../src/client/flow-model.ts'
 import type { SwarmPanelFlowMessage, SwarmPanelModel, SwarmPanelSwarm } from '../src/panel-model.ts'
 
 afterEach(() => { cleanup() })
@@ -37,6 +51,7 @@ function fixtureModel(): SwarmPanelModel {
       roles: [
         { roleName: 'planner', childId: 'child-1', status: 'running', model: { provider: 'mock', model: 'm1' } },
         { roleName: 'coder', childId: 'child-2', status: 'exited', outcome: 'settled' },
+        { roleName: 'reviewer', childId: 'child-3', status: 'exited', outcome: 'error' },
       ],
       pendingHitl: [{ requestId: 'hitl-1', question: 'proceed?', requestedAt: '2026-01-01T00:04:00Z' }],
       context: { phase: 'planning' },
@@ -94,7 +109,7 @@ describe('SwarmAction', () => {
 describe('SwarmPanelView', () => {
   it('renders the Conversation Flow page with topology, lanes, routes, HITL, and timeline', () => {
     const onOpenSession = vi.fn()
-    render(h(SwarmPanelView, { model: fixtureModel(), onOpenSession }))
+    render(h(SwarmPanelView, { model: fixtureModel(), onOpenSession, sessionId: 's-root' }))
     const page = screen.getByLabelText('Conversation Flow')
     expect(page.textContent).toContain('swarm s1')
     expect(page.textContent).toContain('mixed')
@@ -102,13 +117,14 @@ describe('SwarmPanelView', () => {
     expect(page.textContent).toContain('last speaker: planner')
     expect(page.textContent).toContain('chat running, turn 1/4')
     expect(page.textContent).toContain('checkpoint 2026-01-01T00:07:00Z')
-    expect(screen.getAllByRole('button', { name: 'planner — running' }).length).toBeGreaterThan(0)
-    expect(screen.getAllByRole('button', { name: 'coder — exited (settled)' }).length).toBeGreaterThan(0)
-    expect(screen.getByLabelText('human — waiting')).toBeTruthy()
-    expect(page.textContent).toContain('child · running')
-    expect(page.textContent).toContain('parent · running')
-    expect(page.textContent).toContain('Human input pending: proceed?')
-    expect(page.textContent).toContain('phase: planning')
+    expect(screen.getAllByRole('button', { name: 'planner — Active' }).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('button', { name: 'coder — Completed' }).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('button', { name: 'reviewer — Error' }).length).toBeGreaterThan(0)
+    expect(screen.getByLabelText('human — Idle · Waiting')).toBeTruthy()
+    expect(page.textContent).toContain('child · Active')
+    expect(page.textContent).toContain('parent · Active')
+    expect(page.textContent).toContain('Human input required')
+    expect(page.textContent).toContain('proceed?')
     expect(page.textContent).toContain('plan this')
     expect(page.textContent).toContain('draft the change')
     expect(page.textContent).toContain('the plan')
@@ -117,10 +133,22 @@ describe('SwarmPanelView', () => {
     expect(page.textContent).toContain('peer ↔ peer')
     expect(page.textContent).toContain('parent-child 2 · peer 1 · group 1')
     expect(page.textContent).toContain('Legend')
+    expect(page.textContent).toContain('Error')
+    expect(page.textContent).toContain('Completed')
+    expect(page.textContent).toContain('Idle / Waiting')
     expect(onOpenSession).not.toHaveBeenCalled()
     expect(document.querySelector('[data-flow-from="planner"]')).toBeTruthy()
     expect(document.querySelector('[data-flow-from="orchestrator"]')).toBeTruthy()
-    fireEvent.click(screen.getAllByRole('button', { name: 'planner — running' })[0]!)
+    expect(document.querySelector('[data-flow-connector="elbow"]')).toBeTruthy()
+    expect(document.querySelector('[data-flow-capsule]')).toBeNull()
+    expect(document.querySelector('[data-destination-capsule]')).toBeNull()
+    const errorDots = [...document.querySelectorAll('[data-role-state="error"]')]
+    const completedDots = [...document.querySelectorAll('[data-role-state="completed"]')]
+    expect(errorDots.length).toBeGreaterThan(0)
+    expect(completedDots.length).toBeGreaterThan(0)
+    expect(errorDots[0]?.getAttribute('style')).toContain('--dsw-alias-state-error-primary')
+    expect(completedDots[0]?.getAttribute('style')).toContain('--dsw-alias-label-tertiary')
+    fireEvent.click(screen.getAllByRole('button', { name: 'planner — Active' })[0]!)
     expect(onOpenSession).toHaveBeenCalledWith('child-1')
   })
 
@@ -137,7 +165,17 @@ describe('SwarmPanelView', () => {
 
   it('renders an empty Conversation Flow page when the session has no swarm', () => {
     render(h(SwarmPanelView, { model: null, onOpenSession: vi.fn() }))
-    expect(screen.getByText('No swarm in this session. Ask the Orchestrator to create one and spawn roles.')).toBeTruthy()
+    expect(screen.getByText(EMPTY_NO_SWARM)).toBeTruthy()
+  })
+
+  it('renders waiting-projection copy while the host has not pushed a model', () => {
+    render(h(SwarmPanelView, { model: undefined, onOpenSession: vi.fn() }))
+    expect(screen.getByText(EMPTY_WAITING_PROJECTION)).toBeTruthy()
+  })
+
+  it('renders projection-error copy on a client-visible failure', () => {
+    render(h(SwarmPanelView, { model: undefined, projectionError: 'schema mismatch', onOpenSession: vi.fn() }))
+    expect(screen.getByText(`${EMPTY_PROJECTION_ERROR} schema mismatch`)).toBeTruthy()
   })
 
   it('renders one section per swarm without the slot kit', () => {
@@ -183,7 +221,7 @@ describe('SwarmPanelView', () => {
     expect(screen.getAllByText('please continue').length).toBeGreaterThan(0)
 
     fireEvent.change(screen.getByLabelText('Search messages'), { target: { value: 'no-such-message' } })
-    expect(screen.getByText('No matching messages. Clear filters to see the full flow.')).toBeTruthy()
+    expect(screen.getByText(EMPTY_NO_MATCH)).toBeTruthy()
     fireEvent.click(screen.getAllByRole('button', { name: 'Clear filters' })[0]!)
     expect(document.querySelectorAll('[data-flow-seq]').length).toBe(4)
   })
@@ -195,7 +233,7 @@ describe('SwarmPanelView', () => {
     render(h(SwarmPanelView, { model: fixtureModel(), onOpenSession }))
 
     fireEvent.click(document.querySelector('[data-flow-seq="11"]')!)
-    const details = screen.getByLabelText('message details')
+    const details = screen.getByRole('complementary', { name: 'message details' })
     expect(details.textContent).toContain('draft the change')
     expect(details.textContent).toContain('planner (child)')
     expect(details.textContent).toContain('coder (child)')
@@ -203,12 +241,22 @@ describe('SwarmPanelView', () => {
     expect(details.textContent).toContain('peer')
     expect(details.textContent).toContain('child-1')
     expect(details.textContent).toContain('#11')
+    expect(details.textContent).toContain('From')
+    expect(details.textContent).toContain('To')
+    expect(details.textContent).toContain('Route')
+    expect(details.textContent).toContain('Status')
+    expect(details.textContent).toContain('Content preview')
+    expect(getComputedStyle(details).display).toBe('flex')
+    expect(getComputedStyle(details).flexDirection).toBe('column')
 
     fireEvent.click(screen.getByRole('button', { name: 'Open planner session' }))
     expect(onOpenSession).toHaveBeenCalledWith('child-1')
     fireEvent.click(screen.getByRole('button', { name: 'Open coder session' }))
     expect(onOpenSession).toHaveBeenCalledWith('child-2')
 
+    fireEvent.click(screen.getByRole('button', { name: 'Copy ID' }))
+    await act(async () => { await Promise.resolve() })
+    expect(writeText).toHaveBeenCalledWith('11')
     fireEvent.click(screen.getByRole('button', { name: 'Copy message' }))
     await act(async () => { await Promise.resolve() })
     expect(writeText).toHaveBeenCalledWith('draft the change')
@@ -217,7 +265,8 @@ describe('SwarmPanelView', () => {
     expect(writeText.mock.calls.at(-1)?.[0]).toContain('"seq": 11')
 
     fireEvent.click(screen.getByRole('button', { name: 'Close message details' }))
-    expect(screen.getByText('Select a message to inspect routing, content, and sessions.')).toBeTruthy()
+    expect(screen.getByRole('complementary', { name: 'message details' }).textContent)
+      .toContain('Select a message to inspect routing, content, and sessions.')
   })
 
   it('disables session actions for orchestrator, human, group, and unknown agents', () => {
@@ -248,7 +297,7 @@ describe('SwarmPanelView', () => {
       },
     }
     const { rerender } = render(h(SwarmPanelView, { model: empty, onOpenSession: vi.fn() }))
-    expect(screen.getByText('No messages recorded for this swarm yet.')).toBeTruthy()
+    expect(screen.getByText(EMPTY_NO_MESSAGES)).toBeTruthy()
 
     const odd: SwarmPanelModel = {
       s1: {
@@ -263,11 +312,11 @@ describe('SwarmPanelView', () => {
     rerender(h(SwarmPanelView, { model: odd, onOpenSession: vi.fn() }))
     expect(screen.getByText('(empty message)')).toBeTruthy()
     expect(screen.getAllByText('<>&"\'').length).toBeGreaterThan(0)
-    expect(screen.getAllByLabelText('unknown — unknown').length).toBeGreaterThan(0)
-    expect(screen.getAllByLabelText('ghost — unknown').length).toBeGreaterThan(0)
+    expect(screen.getAllByLabelText('unknown — Idle').length).toBeGreaterThan(0)
+    expect(screen.getAllByLabelText('ghost — Idle').length).toBeGreaterThan(0)
     fireEvent.click(document.querySelector('[data-flow-seq="1"]')!)
-    expect(screen.getByLabelText('message details').textContent).toContain('unavailable')
-    expect(screen.getByLabelText('message details').textContent).toContain('not-a-date')
+    expect(screen.getByRole('complementary', { name: 'message details' }).textContent).toContain('unavailable')
+    expect(screen.getByRole('complementary', { name: 'message details' }).textContent).toContain('not-a-date')
   })
 
   it('pauses live follow on scroll-away and shows a new-message affordance', () => {
@@ -275,7 +324,7 @@ describe('SwarmPanelView', () => {
     const { rerender } = render(h(SwarmPanelView, { model: first, onOpenSession: vi.fn() }))
     expect(document.querySelector('[data-live="on"]')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Live follow on' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Live follow on' }))
     expect(document.querySelector('[data-live="paused"]')).toBeTruthy()
 
     const grown: SwarmPanelModel = {
@@ -306,14 +355,39 @@ describe('SwarmPanelView', () => {
     expect(document.querySelector('[data-live="paused"]')).toBeTruthy()
   })
 
-  it('navigates filtered messages with arrow keys and starts at the relevant edge', () => {
+  it('navigates filtered messages with arrow keys only while the flow collection is focused', () => {
     render(h(SwarmPanelView, { model: fixtureModel(), onOpenSession: vi.fn() }))
-    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    const collection = document.querySelector('[data-flow-collection]')
+    if (!(collection instanceof HTMLElement)) throw new Error('missing flow collection')
+    collection.focus()
+    fireEvent.keyDown(collection, { key: 'ArrowDown' })
     expect(document.querySelector('[data-flow-seq="10"]')?.getAttribute('aria-selected')).toBe('true')
-    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    fireEvent.keyDown(collection, { key: 'ArrowDown' })
     expect(document.querySelector('[data-flow-seq="11"]')?.getAttribute('aria-selected')).toBe('true')
-    fireEvent.keyDown(window, { key: 'ArrowUp' })
+    fireEvent.keyDown(collection, { key: 'ArrowUp' })
     expect(document.querySelector('[data-flow-seq="10"]')?.getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('does not steal ArrowUp/Down/Escape from host chrome or window', () => {
+    render(h('div', {},
+      h('button', { type: 'button', 'aria-label': 'Chat tab' }, 'Chat'),
+      h(SwarmPanelView, { model: fixtureModel(), onOpenSession: vi.fn() })))
+    const tab = screen.getByRole('button', { name: 'Chat tab' })
+    tab.focus()
+    const windowEvent = new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
+    const windowSpy = vi.spyOn(windowEvent, 'preventDefault')
+    window.dispatchEvent(windowEvent)
+    expect(windowSpy).not.toHaveBeenCalled()
+    expect(document.querySelector('[data-flow-seq][aria-selected="true"]')).toBeNull()
+
+    const tabEvent = new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })
+    const tabSpy = vi.spyOn(tabEvent, 'preventDefault')
+    tab.dispatchEvent(tabEvent)
+    expect(tabSpy).not.toHaveBeenCalled()
+    expect(document.querySelector('[data-flow-seq][aria-selected="true"]')).toBeNull()
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.getByText('Select a message to inspect routing, content, and sessions.')).toBeTruthy()
   })
 
   it('leaves arrow keys available for text input and exposes full detail content', () => {
@@ -324,18 +398,107 @@ describe('SwarmPanelView', () => {
     expect(document.querySelector('[data-flow-seq][aria-selected="true"]')).toBeNull()
 
     fireEvent.click(document.querySelector('[data-flow-seq="11"]')!)
-    const details = screen.getByLabelText('message details')
+    const details = screen.getByRole('complementary', { name: 'message details' })
     expect(details.querySelector('[title="draft the change"]')).toBeTruthy()
   })
 
-  it('closes details on Escape and activates a row with keyboard', () => {
+  it('closes details on Escape from the focused collection and activates a row with keyboard', () => {
     render(h(SwarmPanelView, { model: fixtureModel(), onOpenSession: vi.fn() }))
     const row = document.querySelector('[data-flow-seq="10"]')
     if (!(row instanceof HTMLElement)) throw new Error('missing row')
     fireEvent.keyDown(row, { key: 'Enter' })
-    expect(screen.getByLabelText('message details').textContent).toContain('plan this')
-    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.getByRole('complementary', { name: 'message details' }).textContent).toContain('plan this')
+    const collection = document.querySelector('[data-flow-collection]')
+    if (!(collection instanceof HTMLElement)) throw new Error('missing flow collection')
+    collection.focus()
+    fireEvent.keyDown(collection, { key: 'Escape' })
     expect(screen.getByText('Select a message to inspect routing, content, and sessions.')).toBeTruthy()
+  })
+
+  it('opens the original swarm session from a pending Human-lane HITL card', () => {
+    const onOpenSession = vi.fn()
+    render(h(SwarmPanelView, { model: fixtureModel(), onOpenSession, sessionId: 's-root' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Human input pending: proceed?' }))
+    expect(onOpenSession).toHaveBeenCalledWith('s-root')
+  })
+
+  it('places compact cards in the sender column with solid parent and dashed peer elbows', () => {
+    render(h(SwarmPanelView, { model: fixtureModel(), onOpenSession: vi.fn() }))
+    const parent = document.querySelector('[data-flow-seq="10"]')
+    const peer = document.querySelector('[data-flow-seq="11"]')
+    if (!(parent instanceof HTMLElement) || !(peer instanceof HTMLElement)) throw new Error('missing rows')
+    expect(parent.querySelector('[data-flow-connector="elbow"]')).toBeTruthy()
+    expect(peer.querySelector('[data-flow-connector="elbow"]')).toBeTruthy()
+    const parentPath = parent.querySelector('[data-flow-connector] path:not([d="M 0 0 L 10 5 L 0 10 z"])')
+    const peerPath = peer.querySelector('[data-flow-connector] path:not([d="M 0 0 L 10 5 L 0 10 z"])')
+    expect(parentPath?.getAttribute('d')).toBe(elbowPath(0, 1))
+    expect(parentPath?.getAttribute('stroke-dasharray')).toBeNull()
+    expect(peerPath?.getAttribute('stroke-dasharray')).toBe('5 4')
+    expect(parent.querySelector('[data-utc-offset]')?.getAttribute('data-utc-offset')).toMatch(/^UTC[+-]\d/)
+    expect(screen.queryByRole('button', { name: /export/i })).toBeNull()
+    expect(screen.getByText(/visible · .* total/)).toBeTruthy()
+    expect(screen.getByText(/First:/)).toBeTruthy()
+    expect(screen.getByText(/Last:/)).toBeTruthy()
+    expect(screen.getByText(/Duration:/)).toBeTruthy()
+    expect(screen.getByText('Auto-scroll')).toBeTruthy()
+    expect(screen.getByRole('checkbox', { name: 'Live follow on' })).toBeTruthy()
+    expect(formatUtcOffset('2026-01-01T00:02:00Z')).toMatch(/^UTC[+-]/)
+  })
+
+  it('maps running / waiting / settled / error onto four distinct role labels', () => {
+    expect(roleVisualLabel(roleVisualState({ name: 'planner', role: { roleName: 'planner', childId: 'c', status: 'running' } }))).toBe('Active')
+    expect(roleVisualLabel(roleVisualState({ name: 'human', pendingHitl: true }), true)).toBe('Idle · Waiting')
+    expect(roleVisualLabel(roleVisualState({
+      name: 'coder',
+      role: { roleName: 'coder', childId: 'c', status: 'exited', outcome: 'settled' },
+    }))).toBe('Completed')
+    expect(roleVisualLabel(roleVisualState({
+      name: 'reviewer',
+      role: { roleName: 'reviewer', childId: 'c', status: 'exited', outcome: 'error' },
+    }))).toBe('Error')
+  })
+
+  it('renders terminated and pending-HITL empty copies', () => {
+    const emptyTerminated: SwarmPanelModel = {
+      s1: {
+        swarmId: 's1',
+        topologyMode: 'parent-child',
+        terminated: true,
+        destroyReason: 'done',
+        messageCount: 0,
+        roles: [],
+        pendingHitl: [],
+        context: {},
+        transcript: [],
+        flow: [],
+      },
+    }
+    const { rerender } = render(h(SwarmPanelView, { model: emptyTerminated, onOpenSession: vi.fn() }))
+    expect(screen.getByText(EMPTY_TERMINATED)).toBeTruthy()
+
+    const pendingOnly: SwarmPanelModel = {
+      s1: {
+        swarmId: 's1',
+        topologyMode: 'parent-child',
+        terminated: false,
+        messageCount: 0,
+        roles: [],
+        pendingHitl: [{ requestId: 'hitl-2', question: 'approve?', requestedAt: '2026-01-01T00:04:00Z' }],
+        context: {},
+        transcript: [],
+        flow: [],
+      },
+    }
+    rerender(h(SwarmPanelView, { model: pendingOnly, onOpenSession: vi.fn(), sessionId: 's-root' }))
+    expect(screen.getByText('Human input required')).toBeTruthy()
+    expect(screen.getByText('approve?')).toBeTruthy()
+    expect(emptyStateCopy({
+      hasSwarm: true,
+      terminated: false,
+      filteredActive: false,
+      messageCount: 0,
+      pendingHitl: 1,
+    })).toBe(EMPTY_PENDING_HITL)
   })
 })
 
@@ -393,5 +556,48 @@ describe('client plugin apply', () => {
     const injectFactory = registrations[1]?.options.inject as () => { onOpenSession: (childId: string) => void }
     injectFactory().onOpenSession('child-7')
     expect(open).toHaveBeenCalledWith('child-7')
+  })
+
+  it('skips every slot registration when client config.enabled === false', () => {
+    const open = vi.fn()
+    const injections: string[] = []
+    const ctx = {
+      sessions: { open },
+      slots: {
+        inject(name: string, body: () => unknown): void {
+          injections.push(name)
+          body()
+        },
+        register(): () => void {
+          throw new Error('disabled client plugin must not register')
+        },
+      },
+    } as unknown as ClientContext
+
+    clientPlugin.apply(ctx, { enabled: false })
+
+    // Master switch: no slot injection occurs, so the throw-on-register guard
+    // is never reached. The header swarm count and Conversation Flow tab both
+    // stay absent from the chrome.
+    expect(injections).toEqual([])
+    expect(clientPlugin.inject).toEqual(['sessions', 'slots'])
+  })
+
+  it('defaults to enabled on the client when the config is omitted', () => {
+    const injections: string[] = []
+    const ctx = {
+      sessions: { open: vi.fn() },
+      slots: {
+        inject(name: string, body: () => unknown): void {
+          injections.push(name)
+          body()
+        },
+        register: () => () => {},
+      },
+    } as unknown as ClientContext
+
+    clientPlugin.apply(ctx)
+
+    expect(injections).toEqual(['conversation.session.header.actions', 'conversation.view'])
   })
 })

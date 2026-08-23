@@ -26,7 +26,7 @@ import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import * as SubagentSpawn from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import { UserQuestionService } from '@deepseek-ai/dsh-user-questions'
 import type { AskUserQuestionAnswer } from '@deepseek-ai/dsh-user-questions'
-import { MockAdapter, textResponse } from '../../../packages/core/agent-loop/tests/mock-adapter.ts'
+import { MockAdapter, textResponse } from '../../../deepseek-harness/packages/core/agent-loop/tests/mock-adapter.ts'
 import * as agentSwarm from '../src/index.ts'
 
 const roots: string[] = []

@@ -20,13 +20,29 @@ export { SwarmAction, SwarmConversationView, SwarmPanelView } from './SwarmActio
 export type { SwarmActionProps, SwarmConversationViewProps, SwarmPanelActions, SwarmPanelViewProps } from './SwarmAction.ts'
 
 /** Required services: header-slot contribution and child-session navigation. */
-export const inject = ['sessions', 'slots']
+export const inject = ['sessions', 'slots'] as const
+
+/**
+ * Client-side configuration (deployment choices, changeable from cordis.yml).
+ * Mirrors the host plugin's master switch so the header swarm count and the
+ * Conversation Flow tab can be turned off without touching the host runtime.
+ */
+export interface ClientConfig {
+  /**
+   * Master switch: when `false`, `apply` short-circuits without registering the
+   * header action or the Conversation Flow tab. Defaults to `true`.
+   */
+  enabled?: boolean
+}
 
 /**
  * Client plugin body: register the header action.
  * @param ctx - client root context.
+ * @param config - optional client config; `enabled: false` disables the panel.
  */
-export function apply(ctx: ClientContext): void {
+export function apply(ctx: ClientContext, config: ClientConfig = {}): void {
+  // Master switch: skip every slot registration when explicitly disabled.
+  if (config.enabled === false) return
   const sessions = ctx.sessions
   const actions = (): SwarmPanelActions => ({
     // The brand is compile-time only; the wire id arrives as a string.

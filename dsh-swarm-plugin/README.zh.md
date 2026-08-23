@@ -36,11 +36,41 @@ dsh plugin --profile web add dsh-swarm-panel
 dsh plugin --profile web add file:./dsh-swarm-plugin
 ```
 
+## 配置
+
+所有可选项都写在 `cordis.yml` 插件行的 `config:` 块下，并都有安全的默认值；空 `config: {}` 即按文档默认值启用插件。
+
+```yaml
+# cordis.yml row config
+plugins:
+  dsh-swarm-panel:
+    $: workspace:*
+    config:
+      enabled: true # 总开关：false 则不挂任何投影、工具与 effect
+      provider: spawn
+      humanInputMode: TERMINATE
+      checkpoint: { frequency: auto }
+      chat: { speakerSelection: round_robin, transcriptWindow: 10 }
+      memory: { maxEntries: 200, queryLimit: 5 }
+```
+
+- **`enabled`**（默认 `true`）：设为 `false` 时，`apply` 直接返回，不注册 `swarm` 投影、`swarm/*` 事件词表或任何 per-agent effect。宿主侧不留任何痕迹，客户端侧省略头部 `Swarms: N` 徽标和 Conversation Flow 页签。安装保留但临时关掉面板时使用此项；若想完全跳过插件入口，在 `cordis.yml` 行上加 loader 级的 `disabled: true`。
+
 ## Web 界面
 
-插件安装到 `web` profile 后，让 Orchestrator 创建 swarm 并启动一个角色，例如：`Create a swarm named default and spawn one planner role.` 在 Chat 和 Trajectory 旁边打开 **Conversation Flow** 页签。该页就是 swarm 画布：Orchestrator、角色与 Human 泳道，父子 / 兄弟 / 群组路由，以及筛选、消息详情和 Live 跟随。头部的 `Swarms: N` 只是计数。点击角色泳道可打开对应子会话。
+插件安装到 `web` profile 后，让 Orchestrator 创建 swarm 并启动一个角色，例如：`Create a swarm named default and spawn one planner role.` 在 Chat 和 Trajectory 旁边打开 **Conversation Flow** 页签。该页是插件负责的 swarm 画布（侧栏 Workspaces、Chat/Trajectory 页签和顶栏 Session log 仍由宿主绘制）：
 
-![DeepSeek Harness Agent Swarm 面板](assets/swarm-panel.png)
+- 拓扑条是角色图标卡，带 parent/child 以及 Active / Idle·Waiting / Completed / Error（Error 独立成色，不并进 exited 灰点）。
+- 泳道时间网格带竖向车道线；紧凑消息卡落在发送者列；路由是折线箭头（实线 `parent → child`，虚线 `peer ↔ peer`），不再用目的地胶囊替代。
+- 时间列显示时刻和 `UTC±N` 偏移。
+- 详情区是堆叠 inspector（From/To、Route、Status、Content preview、Copy ID、打开 session）。投影里没有 Tags / Token usage / View in Trajectory，因此省略，不伪造。
+- 页脚：visible/total、First、Last、Duration、Live、Auto-scroll。Export 没有数据源，明确未做。
+- Human lane 的 pending HITL 可点，打开原始 swarm 会话。
+- ArrowUp / ArrowDown / Escape 只在 Conversation Flow 集合聚焦时生效。
+
+头部的 `Swarms: N` 只是计数。点击角色卡或泳道可打开对应子会话。
+
+![dsh-swarm-panel Conversation Flow 在 DeepSeek Harness web 壳中的宿主合成图](assets/swarm-panel.png)
 
 ## 工具集
 
@@ -170,7 +200,7 @@ config:
 
 宿主组装 session projection 能力（`ctx.sessionProjections`）时，插件会注册一个 `swarm` 投影单元，把每个 `swarm/*` 事件增量 fold 成会话级面板模型（`Record<swarmId, SwarmPanelSwarm> | null`）：角色名册与拓扑模式、每条已路由 `swarm/role-message` 及其父子/兄弟归因、群聊 transcript、待答 HITL 请求、上下文变量、群聊引擎状态，以及最新检查点/恢复标记。fold 是增量的——无关事件返回同一状态引用，因此变更推送只会在面板值真正变化时触发。
 
-浏览器半件以 `dsh-swarm-panel/client` 导出（经 package.json 的 `dsh.client` 声明发现）：一个 Conversation Flow 的 `conversation.view` 页签，外加头部的 swarm 计数徽章——无 RPC、无客户端 store，也不发起新的模型请求。该页签始终列在 Chat 和 Trajectory 旁边；徽章在会话还没有任何 swarm 时隐藏。Live/Pause 只控制视口跟随。每个角色泳道可打开该角色的子会话（`ctx.sessions.open`）；打开持久化的子会话会在宿主侧触发冷启动恢复，这就是面板触发恢复的方式。
+浏览器半件以 `dsh-swarm-panel/client` 导出（经 package.json 的 `dsh.client` 声明发现）：一个 Conversation Flow 的 `conversation.view` 页签，外加头部的 swarm 计数徽章——无 RPC、无客户端 store，也不发起新的模型请求。该页签始终列在 Chat 和 Trajectory 旁边；徽章在会话还没有任何 swarm 时隐藏。Auto-scroll / Live 只控制视口跟随。空状态覆盖无 swarm、等待投影、projection 错误、无消息、无匹配、已终止和 pending HITL。每个角色泳道可打开该角色的子会话（`ctx.sessions.open`）；打开持久化的子会话会在宿主侧触发冷启动恢复，这就是面板触发恢复的方式。
 
 ## 已知限制 / Roadmap
 

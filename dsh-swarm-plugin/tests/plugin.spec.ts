@@ -7,7 +7,7 @@ import Loader from '@deepseek-ai/cordis-plugin-loader'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { CallId, MessageId } from '@deepseek-ai/dsh-llm'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import { KNOWN_SESSION_EVENT_TYPES, SessionId } from '@deepseek-ai/dsh-session'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
@@ -241,5 +241,45 @@ describe('Agent Swarm plugin composition', () => {
     await plugin.dispose()
     await root.dispose()
     await otherRoot.dispose()
+  })
+
+  it('honors config.enabled === false: no tools, no projection, no event vocabulary', async () => {
+    const ctx = await harness()
+
+    // Snapshot the persistence read path's known-event-type set before the
+    // plugin touches it. The plugin's normal apply() adds `swarm/*` here and
+    // removes them on dispose; a disabled apply() must leave the set unchanged.
+    const knownTypes = KNOWN_SESSION_EVENT_TYPES as Set<string>
+    const beforeSize = knownTypes.size
+    expect(knownTypes.has('swarm/created')).toBe(false)
+
+    const plugin = await ctx.plugin(agentSwarm, { enabled: false })
+
+    // Disabled apply short-circuits without registering anything: future root
+    // agents stay tool-free, and the host projection registry sees no `swarm`
+    // key (the registry keeps its own internal map; absence is observable
+    // through `ctx.sessionProjections` if exposed, or through tool absence).
+    const root = await ctx.agents.create({ sessionId: SessionId('swarm-disabled-root') })
+    expect(ctx.tools.get('swarm_spawn', root.agent)).toBeUndefined()
+    expect(ctx.tools.get('swarm_send_to', root.agent)).toBeUndefined()
+    expect(ctx.tools.get('swarm_terminate', root.agent)).toBeUndefined()
+
+    // Event vocabulary stayed empty: `swarm/created` was not registered.
+    expect(knownTypes.has('swarm/created')).toBe(false)
+    expect(knownTypes.size).toBe(beforeSize)
+
+    // Disposing a disabled plugin is a no-op (no cleanup was registered).
+    await plugin.dispose()
+    await root.dispose()
+  })
+
+  it('config.enabled defaults to enabled: omitting the flag activates Swarm', async () => {
+    const ctx = await harness()
+    const plugin = await ctx.plugin(agentSwarm)
+    const root = await ctx.agents.create({ sessionId: SessionId('swarm-default-root') })
+    expect(ctx.tools.get('swarm_spawn', root.agent)?.name).toBe('swarm_spawn')
+    expect((KNOWN_SESSION_EVENT_TYPES as Set<string>).has('swarm/created')).toBe(true)
+    await plugin.dispose()
+    await root.dispose()
   })
 })

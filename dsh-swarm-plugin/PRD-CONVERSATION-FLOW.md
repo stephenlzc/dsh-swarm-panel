@@ -93,7 +93,7 @@ Live 模式下新消息自动追加并保持视口在底部；用户向上滚动
 
 ### 6.4 Group message
 
-`to: group` 的群聊消息在所有 Agent 泳道上显示一个 group marker，发送者仍是实际 speaker；它不伪造为多个独立 relay 消息。
+`to: group` 的群聊消息在发送者泳道渲染一张带 group badge 的消息卡片；它不在其他泳道重复渲染，也不伪造成多条 relay 消息——接收方集合已经包含在卡片 metadata 里。
 
 ## 7. 数据要求
 
