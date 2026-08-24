@@ -12,10 +12,10 @@ This file is the maintainer checklist for `dsh-swarm-panel`. It separates what i
 | Host-composed browser flow | `tests/host/conversation-flow.e2e.ts` | Passes locally |
 | Manual browser interaction | In-app browser evidence | Passes for the documented scenarios |
 | Responsive layout | 390×844 browser viewport, no horizontal overflow | Passes locally |
-| Keyless CI | `.github/workflows/ci.yml` | Workflow now covers metadata, pack, Harness typecheck, tests, and build; first public Actions run pending |
-| Real API smoke | `tests/cold-resume.e2e.ts` with `DEEPSEEK_API_KEY` | Run before a runtime release |
-| GitHub repository | public remote and Actions result | Pending repository creation and first green Actions run |
-| npm publication | published package install and `dsh plugin add` | Tarball install/import smoke passes locally; npm publication and `dsh plugin add` remain pending |
+| Keyless CI | `.github/workflows/ci.yml` | Passes: public Actions run `32736107342` has all three jobs green |
+| Real API smoke | `tests/cold-resume.e2e.ts` with `DEEPSEEK_API_KEY` | Passes: 1 test passed with an out-of-band key; no credential was persisted |
+| GitHub repository | public remote and Actions result | Passes: `stephenlzc/dsh-swarm-panel` is public and `main` is green |
+| npm publication | published package install and `dsh plugin add` | Tarball install passed in temporary `tarball`, `web`, and `headless` profiles; npm publication remains intentionally pending |
 
 ## Before tagging
 
@@ -33,7 +33,7 @@ This file is the maintainer checklist for `dsh-swarm-panel`. It separates what i
 - `dsh-swarm-plugin/assets/` contains the package screenshot gallery and the short Conversation Flow tour GIF. `docs/screenshots/` contains the fresh in-app-browser audit captures.
 - Browser captures prove the current host composition and interaction states: overview, inspector, route filtering, search empty state, Live pause/resume, HITL focus, child-session navigation, and 390×844 layout.
 - The child-session navigation check used a keyless fixture without child replay responses, so it correctly exposed the fixture's expected model-call failure after navigation; it is not evidence of a live API failure.
-- Before public release, run the real-API cold-resume test with credentials supplied out-of-band and install the final tarball into the matching Harness profile.
+- The current candidate has completed the real-API cold-resume test and final tarball installation in temporary compatible profiles. Repeat both for any later runtime change.
 
 ## Evidence policy
 

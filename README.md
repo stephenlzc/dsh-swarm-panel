@@ -90,14 +90,15 @@ The package currently targets the Harness `0.1.x` release line. Keep the plugin 
 
 The current release candidate has been checked with:
 
-- 84 plugin tests passed; one real-API test is intentionally skipped without a key.
+- 84 keyless plugin tests passed; the key-gated real-API cold-resume test also passed (1 test).
 - Host-composed browser E2E passed in the real web shell.
 - TypeScript host and client checks passed.
 - Manual in-app browser interaction covered details, route and Agent filters, search empty state, Clear filters, Live pause/resume, Human input, child-session navigation, keyboard coexistence, and a 390×844 viewport.
 - `npm pack --dry-run` contains the built runtime, declarations, client bundle, patch, README, license, and canonical screenshot.
+- The final tarball installed successfully through `dsh plugin add` into temporary compatible `tarball`, `web`, and `headless` profiles; the web profile booted the Harness shell with the package installed.
 - The repository includes a redacted, deterministic UI tour GIF and a fresh in-app-browser audit set under `docs/screenshots/`.
 
-The keyless browser fixture proves UI and host composition. It does not claim a live model call; run the real-API cold-resume test with `DEEPSEEK_API_KEY` before publishing a release that changes runtime behavior.
+The keyless browser fixture proves UI and host composition, while the separate cold-resume run proves the live runtime path. npm publication and a tagged GitHub release are still maintainer actions; the current repository is the download source until those are authorized.
 
 ## Scope and known limitations
 

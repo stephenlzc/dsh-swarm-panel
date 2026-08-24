@@ -15,4 +15,5 @@ dist/
 .idea/
 .vscode/
 *.tsbuildinfo
+*.tgz
 **/browser-pass-*.log
