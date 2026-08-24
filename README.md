@@ -1,5 +1,7 @@
 # dsh-swarm-panel
 
+[English](README.md) · [中文](README.zh-CN.md) · [한국어](README.ko.md) · [日本語](README.ja.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
+
 [![CI](https://github.com/stephenlzc/dsh-swarm-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/stephenlzc/dsh-swarm-panel/actions/workflows/ci.yml)
 
 Conversation Flow observability for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): watch an Orchestrator coordinate child agents, inspect routed messages, follow topology changes, and open any child session from the web UI.
@@ -49,6 +51,24 @@ dsh web
 The GitHub repository is the current distribution source until the npm package is published; use the checkout instructions below today.
 
 Create or open a session, ask the Orchestrator to create a swarm, and open the **Conversation Flow** tab next to Chat and Trajectory.
+
+### Directly from GitHub
+
+The package currently lives in the `dsh-swarm-plugin/` subdirectory of this repository. Install that package directly from GitHub with pnpm's Git subdirectory syntax:
+
+```bash
+dsh plugin --profile web add 'github:stephenlzc/dsh-swarm-panel#path:dsh-swarm-plugin'
+dsh web
+```
+
+For a reproducible install, pin the GitHub reference to a commit:
+
+```bash
+dsh plugin --profile web add \
+  'github:stephenlzc/dsh-swarm-panel#path:dsh-swarm-plugin&<commit-sha>'
+```
+
+GitHub installs use the repository's committed build artifacts and are best suited to development snapshots. For the stable registry release, use the npm command above after publication. Git-hosted dependencies can run install-time code; inspect and trust the source before installing.
 
 ### From this checkout
 
@@ -110,7 +130,7 @@ The keyless browser fixture proves UI and host composition, while the separate c
 - Source-level development still depends on a matching Harness workspace; the published package is the consumer installation path.
 - The bundled example makes a real model call; it is intentionally not run by keyless CI.
 
-See the detailed [plugin README](dsh-swarm-plugin/README.md), [Chinese README](dsh-swarm-plugin/README.zh.md), and [release checklist](docs/release-checklist.md) for configuration, tool reference, development commands, and the evidence behind this status.
+See the detailed [plugin README](dsh-swarm-plugin/README.md), [Chinese plugin README](dsh-swarm-plugin/README.zh.md), and [release checklist](docs/release-checklist.md) for configuration, tool reference, development commands, and the evidence behind this status.
 
 ## Repository layout
 
