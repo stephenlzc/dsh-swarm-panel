@@ -108,3 +108,9 @@ dsh web
 ## 许可证
 
 MIT，见 [`dsh-swarm-plugin/LICENSE`](dsh-swarm-plugin/LICENSE)。
+
+## 欢迎提交 Issue 和 Pull Request
+
+发现问题、有新的想法，或想改进这个插件？欢迎提交 [Issue](https://github.com/stephenlzc/dsh-swarm-panel/issues) 或 [Pull Request](https://github.com/stephenlzc/dsh-swarm-panel/pulls)。
+
+也欢迎 Fork。本项目欢迎你基于 `dsh-swarm-panel` 开发自己的扩展、界面改进、集成和工作流实验。

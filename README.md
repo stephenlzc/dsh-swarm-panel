@@ -144,3 +144,9 @@ dsh-swarm-panel/
 ## License
 
 MIT. See [`dsh-swarm-plugin/LICENSE`](dsh-swarm-plugin/LICENSE).
+
+## Call for Issues and Pull Requests
+
+Found a bug, have an idea, or want to improve the plugin? Please open an [issue](https://github.com/stephenlzc/dsh-swarm-panel/issues) or submit a [pull request](https://github.com/stephenlzc/dsh-swarm-panel/pulls).
+
+Forks are welcome. Feel free to build your own extensions, UI improvements, integrations, and workflow experiments on top of `dsh-swarm-panel`.

@@ -101,3 +101,9 @@ session を作成し、Orchestrator に swarm の作成を依頼して、Chat �
 ## ライセンス
 
 MIT。 [`dsh-swarm-plugin/LICENSE`](dsh-swarm-plugin/LICENSE) を参照してください。
+
+## Issue と Pull Request の募集
+
+バグを見つけた場合、新しいアイデアがある場合、またはプラグインを改善したい場合は、[Issue](https://github.com/stephenlzc/dsh-swarm-panel/issues) を作成するか、[Pull Request](https://github.com/stephenlzc/dsh-swarm-panel/pulls) を送ってください。
+
+Fork も歓迎します。`dsh-swarm-panel` を土台に、独自の拡張、UI 改善、統合機能、ワークフロー実験を自由に作成してください。

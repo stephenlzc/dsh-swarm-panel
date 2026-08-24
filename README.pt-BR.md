@@ -101,3 +101,9 @@ Consulte o [README detalhado do plugin](dsh-swarm-plugin/README.md), o [README d
 ## Licença
 
 MIT. Consulte [`dsh-swarm-plugin/LICENSE`](dsh-swarm-plugin/LICENSE).
+
+## Convite para Issues e Pull Requests
+
+Encontrou um erro, tem uma ideia ou quer melhorar o plugin? Abra uma [issue](https://github.com/stephenlzc/dsh-swarm-panel/issues) ou envie um [pull request](https://github.com/stephenlzc/dsh-swarm-panel/pulls).
+
+Forks são bem-vindos. Fique à vontade para criar suas próprias extensões, melhorias de UI, integrações e experimentos de fluxo de trabalho com base no `dsh-swarm-panel`.
