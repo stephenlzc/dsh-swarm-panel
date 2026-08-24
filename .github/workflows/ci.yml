@@ -78,6 +78,7 @@ jobs:
       - name: Mount this plugin into the matching Harness workspace
         working-directory: harness
         run: |
+          mkdir -p plugins
           rm -rf plugins/dsh-swarm-panel
           ln -s "$GITHUB_WORKSPACE/dsh-swarm-plugin" plugins/dsh-swarm-panel
       - name: Install Harness dependencies
