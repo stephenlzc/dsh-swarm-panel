@@ -1,0 +1,72 @@
+# Run from a DeepSeek Harness checkout after installing dsh-swarm-panel:
+#
+#   pnpm dsh --profile headless \
+#     --patch ../dsh-swarm-panel/dsh-swarm-plugin/examples/coding-squad/cordis.yml \
+#     "review the pending PR"
+
+- id: settings
+  name: '@deepseek-ai/dsh-settings-file'
+
+- id: credentials
+  name: '@deepseek-ai/dsh-credentials-local'
+
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek'
+  config:
+    thinking: enabled
+    reasoningEffort: max
+    models:
+      - id: deepseek-v4-pro
+        contextWindow: 128000
+      - id: deepseek-v4-flash
+        contextWindow: 128000
+
+- id: subprocess
+  name: '@deepseek-ai/dsh-subprocess-local'
+
+- id: bash
+  name: '@deepseek-ai/dsh-bash-local'
+  config:
+    timeoutMs: 60000
+
+- id: user-questions
+  name: '@deepseek-ai/dsh-user-questions'
+
+- id: dsh-swarm-panel
+  name: 'dsh-swarm-panel'
+  config:
+    humanInputMode: TERMINATE
+    checkpoint:
+      frequency: auto
+    chat:
+      speakerSelection: round_robin
+      maxRounds: 6
+      transcriptWindow: 10
+    memory:
+      maxEntries: 200
+      queryLimit: 5
+
+- id: agent-spine
+  name: '@deepseek-ai/dsh-agent-spine-demo'
+  config:
+    agents:
+      - id: orchestrator
+        provider: deepseek-official
+        model: deepseek-v4-flash
+        cwd: !!js process.cwd()
+    workspaceContext:
+      maxBytes: 65536
+    persona: |
+      You are a code-review orchestrator.
+
+      Plan a three-role review for the current PR: a planner that breaks the
+      diff into concerns, a security reviewer that hunts vulnerability patterns,
+      and a correctness reviewer that validates the planner's claims.
+
+      Use swarm_spawn to create the roles, swarm_set_topology to switch to
+      peer-to-peer, and swarm_send_to to route messages. Use swarm_start_chat
+      and swarm_next_turn to drive the group discussion. Use swarm_set_context
+      to record the final verdict and swarm_memory_write to remember recurring
+      findings across runs. Query those notes with swarm_memory_query.
+
+      When the review settles, run swarm_checkpoint, then summarize the verdict.

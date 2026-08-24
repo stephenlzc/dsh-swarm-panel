@@ -1,52 +1,125 @@
 # dsh-swarm-panel
 
-独立 Git 仓库。唯一项目名 / npm 包名 / Cordis 插件名均为 **`dsh-swarm-panel`**，与上游 DeepSeek Harness 里的 `dsh-agent-swarm` 区分，避免包名和插件 id 冲突。
+[![CI](https://github.com/stephenlzc/dsh-swarm-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/stephenlzc/dsh-swarm-panel/actions/workflows/ci.yml)
 
-本目录从 `deepseek-harness` 迁出，用于独立开发 Conversation Flow / swarm panel。来源：`/Users/cong/Documents/AI_Project/deepseek-harness`。
+Conversation Flow observability for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): watch an Orchestrator coordinate child agents, inspect routed messages, follow topology changes, and open any child session from the web UI.
 
-## 目录结构
+![Conversation Flow overview](dsh-swarm-plugin/assets/swarm-panel.png)
 
-```
-dsh-swarm-panel/
-├── dsh-swarm-plugin/        # 插件源码（完整迁移，仅排除 node_modules，它是指向仓库工作区的符号链接）
-│   ├── src/                 # 运行时 + client 端实现（SwarmAction.ts 等）
-│   ├── tests/               # 单元 / 端到端 / 快照测试
-│   ├── lib/                 # tsdown 构建产物
-│   ├── assets/swarm-panel.png   # 插件 UI 截图
-│   ├── PLAN.md / PLAN-CONVERSATION-FLOW.md   # 开发 plan 与对话流 plan
-│   ├── PRD-CONVERSATION-FLOW.md / M2-M5.md   # PRD 对话流 / 里程碑
-│   ├── AUDIT.md / AGENTS.md / README.md / README.zh.md
-│   └── package.json         # dsh-swarm-panel
-├── docs/
-│   ├── conversation/        # 设计与开发对话产物（仓库根目录文件）
-│   │   ├── PRD.md                           # 产品需求文档
-│   │   ├── SWARM-RESEARCH.md                # swarm 调研
-│   │   ├── design-qa.md                     # 设计 QA
-│   │   └── evidence-review-conversation-flow-clone-fidelity.md  # 对话流保真审查报告
-│   ├── harness/             # DeepSeek Harness 架构 / 插件开发文档（下载自仓库）
-│   │   ├── AGENTS.md / packages-AGENTS.md / docs-AGENTS.md
-│   │   ├── architecture.md(.zh)  capability-seams  cordis-primer  defensive-patterns
-│   │   ├── development  testing  glossary  subsystems-README
-│   │   ├── cookbook/        # extension-cookbook、adding-a-tool / a-conversation-node / a-package / a-settings-card
-│   │   └── notes/           # 与本插件最相关的已实现架构 Agent Notes（中英对照）
-│   └── screenshots/         # 截图：swarm-panel.png + web-e2e-* 界面截图
-└── README.md
-```
+This repository is the standalone `dsh-swarm-panel` plugin. It is not the same package as the historical `dsh-agent-swarm` plugin that lived inside a Harness checkout.
 
-## 迁移说明
+## What it adds
 
-- `dsh-swarm-plugin/` 为 `plugins/dsh-swarm-plugin` 的完整副本，排除 `node_modules`（内含指向 harness 工作区的符号链接，迁移后失效）。`lib/` 为构建产物，一并保留。
-- 插件包名 `dsh-swarm-panel`（Cordis `name` / 客户端 bundle id 同步为此名）。peerDependencies 仍指向 `@deepseek-ai/*` 工作区包；如需在此目录独立运行测试/构建，请重新 `pnpm install` 并接入同版本 harness 工作区。
-- 本地安装：`dsh plugin --profile web add file:./dsh-swarm-plugin`。
-- 仓库根目录的 `PRD.md`、`SWARM-RESEARCH.md`、`design-qa.md` 及 `.omo/evidence/` 下的保真审查报告归入 `docs/conversation/`。
-- `docs/harness/` 收录 DeepSeek Harness 的架构与插件开发文档（含中英双语及 i18n 清单），以及挑选的 8 篇与本客户端插件最相关的 Agent Notes。
-- 未发现名为 "PROM" 的文件（仓库与插件中均无）；如指 PRD/PLAN，均已迁移。
+- A durable swarm runtime with parent-child, peer-to-peer, and mixed routing.
+- Checkpoints and cold-resume recovery from the session event log.
+- Group chat turns, shared context, lightweight memory, and human-in-the-loop pauses.
+- A host-composed Conversation Flow tab with topology, swimlanes, route filters, message inspection, Live follow, and child-session navigation.
 
-## 版本记录
+## UI gallery
 
-| 项目 | 来源 commit |
+The gallery uses a deterministic populated fixture so the screenshots show every important visual state without exposing a real workspace or API credential.
+
+| Desktop overview | Message inspector |
 | --- | --- |
-| 插件 | `4ac2de3c22`(feat)、`beeee88945`(fix)、`46198cce02`(docs) 及未提交改动 |
-| 根目录 PRD/SWARM-RESEARCH/design-qa | 工作区当前状态 |
+| ![Desktop overview](dsh-swarm-plugin/assets/swarm-panel-host-desktop.png) | ![Message inspector](dsh-swarm-plugin/assets/swarm-panel-host.png) |
 
-迁移时间：2026-08-21
+| Responsive layout | Topology and Human input |
+| --- | --- |
+| ![Responsive Conversation Flow](dsh-swarm-plugin/assets/swarm-panel-host-narrow.png) | ![Topology and Human input](dsh-swarm-plugin/assets/swarm-panel.png) |
+
+The screenshots intentionally show a pending Human input card, Error role status, parent-child and peer routes, a selected message, and the host shell around the plugin-owned panel.
+
+### Short tour
+
+![Conversation Flow tour](dsh-swarm-plugin/assets/conversation-flow-tour.gif)
+
+The tour moves through the desktop overview, selected-message inspector, and 390×844 responsive layout. It is assembled from the same deterministic replay fixture used by the keyless UI checks; no model output or credential is embedded.
+
+## Quick start
+
+The plugin runs inside a compatible DeepSeek Harness installation. Install Harness first, then install this package into the `web` profile.
+
+### After npm publication
+
+```bash
+dsh plugin --profile web add dsh-swarm-panel
+dsh web
+```
+
+The GitHub repository is the current distribution source until the npm package is published; use the checkout instructions below today.
+
+Create or open a session, ask the Orchestrator to create a swarm, and open the **Conversation Flow** tab next to Chat and Trajectory.
+
+### From this checkout
+
+```bash
+git clone https://github.com/stephenlzc/dsh-swarm-panel.git
+dsh plugin --profile web add file:./dsh-swarm-panel/dsh-swarm-plugin
+dsh web
+```
+
+The source checkout's typecheck and tests require a matching DeepSeek Harness source checkout because the plugin's development dependencies use the Harness workspace packages.
+
+The package manifest is publishable independently: runtime peers use the public Harness release ranges, while the source workspace keeps `workspace:*` only in development dependencies.
+
+## Runnable code-review example
+
+The repository includes a real Harness overlay at [`dsh-swarm-plugin/examples/coding-squad/cordis.yml`](dsh-swarm-plugin/examples/coding-squad/cordis.yml). From a DeepSeek Harness checkout with this repository available at `../dsh-swarm-panel`:
+
+```bash
+export DEEPSEEK_API_KEY=... # keep credentials in the environment or DSH credential store
+pnpm dsh --profile headless \
+  --patch ../dsh-swarm-panel/dsh-swarm-plugin/examples/coding-squad/cordis.yml \
+  "review the pending PR"
+```
+
+The example asks one Orchestrator to spawn planner, security, and correctness roles, exchange findings, record a verdict, and checkpoint the swarm. The web profile shows the same durable events in Conversation Flow.
+
+## Supported environment
+
+| Component | Release target |
+| --- | --- |
+| DeepSeek Harness | `0.1.0-rc.7` workspace API and compatible releases |
+| Node.js | `22.19+` or Node `24+` |
+| Browser | DeepSeek Harness `web` profile |
+| Package | `dsh-swarm-panel@0.1.0` |
+
+The package currently targets the Harness `0.1.x` release line. Keep the plugin and Harness versions aligned when upgrading.
+
+## Verification status
+
+The current release candidate has been checked with:
+
+- 84 plugin tests passed; one real-API test is intentionally skipped without a key.
+- Host-composed browser E2E passed in the real web shell.
+- TypeScript host and client checks passed.
+- Manual in-app browser interaction covered details, route and Agent filters, search empty state, Clear filters, Live pause/resume, Human input, child-session navigation, keyboard coexistence, and a 390×844 viewport.
+- `npm pack --dry-run` contains the built runtime, declarations, client bundle, patch, README, license, and canonical screenshot.
+- The repository includes a redacted, deterministic UI tour GIF and a fresh in-app-browser audit set under `docs/screenshots/`.
+
+The keyless browser fixture proves UI and host composition. It does not claim a live model call; run the real-API cold-resume test with `DEEPSEEK_API_KEY` before publishing a release that changes runtime behavior.
+
+## Scope and known limitations
+
+- Export is not implemented because the current projection has no export data source.
+- A2A / ACP external protocol bridging is not included.
+- Nested sub-swarms are intentionally not included; the current model has one Orchestrator level.
+- Memory is Orchestrator-owned lexical retrieval; it is not automatically injected into every turn prompt and is not shown as a separate panel.
+- The panel copy is currently English-only.
+- Source-level development still depends on a matching Harness workspace; the published package is the consumer installation path.
+- The bundled example makes a real model call; it is intentionally not run by keyless CI.
+
+See the detailed [plugin README](dsh-swarm-plugin/README.md), [Chinese README](dsh-swarm-plugin/README.zh.md), and [release checklist](docs/release-checklist.md) for configuration, tool reference, development commands, and the evidence behind this status.
+
+## Repository layout
+
+```text
+dsh-swarm-panel/
+├── dsh-swarm-plugin/       # package source, built artifacts, tests, example, and gallery assets
+├── docs/                   # release checklist and design/research history
+└── .github/workflows/      # package and source verification gates
+```
+
+## License
+
+MIT. See [`dsh-swarm-plugin/LICENSE`](dsh-swarm-plugin/LICENSE).

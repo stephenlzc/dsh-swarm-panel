@@ -10,7 +10,7 @@ DSH Agent Swarm: AI-driven multi-agent orchestration with dynamic communication 
 
 ## Quick Start
 
-Add the plugin to your cordis.yml (the deployment ships the tool surface to every root Orchestrator agent), then point the Orchestrator at the bundled code-review squad example:
+Add the plugin to your cordis.yml (the deployment ships the tool surface to every root Orchestrator agent), then point the Orchestrator at the bundled code-review squad example. The `workspace:*` row below is for a Harness source checkout; end users should install the package with `dsh plugin` as shown in Installation.
 
 ```yaml
 # cordis.yml (overlay onto your base profile, or copy into $DSH_HOME/profiles/<name>/)
@@ -19,8 +19,8 @@ plugins:
 ```
 
 ```bash
-# Run the bundled code-review squad (see examples/coding-squad/cordis.yml)
-pnpm dsh --profile headless --patch ./examples/coding-squad/cordis.yml \
+# Run the bundled code-review squad from a DeepSeek Harness checkout
+pnpm dsh --profile headless --patch ../dsh-swarm-panel/dsh-swarm-plugin/examples/coding-squad/cordis.yml \
   "review the pending PR"
 ```
 
@@ -29,7 +29,7 @@ The 14 tools are auto-installed on root agents only. Children get no swarm surfa
 ## Installation
 
 ```bash
-# Install via dsh plugin command
+# Install via dsh plugin command after the npm release
 dsh plugin --profile web add dsh-swarm-panel
 
 # Or for local development from this checkout
@@ -46,7 +46,7 @@ activates the plugin with the documented defaults.
 # cordis.yml row config
 plugins:
   dsh-swarm-panel:
-    $: workspace:*
+    $: workspace:* # source-checkout development only
     config:
       enabled: true # master switch: false disables every projection, tool, and effect
       provider: spawn
@@ -79,6 +79,18 @@ With the plugin installed in the `web` profile, ask the Orchestrator to create a
 The header `Swarms: N` badge is only a count. Click a role card or lane to open its child session.
 
 ![dsh-swarm-panel Conversation Flow in the DeepSeek Harness web shell](assets/swarm-panel.png)
+
+Additional host-composed gallery evidence is available in the repository root:
+
+- [`swarm-panel-host-desktop.png`](assets/swarm-panel-host-desktop.png): full desktop shell with topology, routes, inspector, and HITL.
+- [`swarm-panel-host-narrow.png`](assets/swarm-panel-host-narrow.png): 390×844 responsive layout.
+- [`swarm-panel-host.png`](assets/swarm-panel-host.png): selected-message inspector state.
+
+The images use a deterministic replay fixture. They are UI evidence, not proof of a live model response.
+
+![Conversation Flow tour](assets/conversation-flow-tour.gif)
+
+The short tour moves through the desktop overview, message inspector, and 390×844 responsive layout. It is assembled from redacted replay screenshots and contains no API credential.
 
 ## Tool Reference
 
@@ -217,6 +229,21 @@ The browser half ships as `dsh-swarm-panel/client` (discovered through the packa
 - **Memory consumption**: memories are written/queried by the Orchestrator only; roles do not write directly, and turn prompts do not inject memories yet.
 - **Panel copy** is English-only (no locale namespace).
 - The real-API cold-resume e2e (`tests/cold-resume.e2e.ts`) runs only when `DEEPSEEK_API_KEY` is set; the resident mock-adapter equivalent lives in `tests/chat.spec.ts`.
+
+## Compatibility and development
+
+The current package targets the DeepSeek Harness `0.1.x` release line and Node.js `22.19+` or `24+`. Runtime consumers install the published package through the Harness profile; source-level typecheck and tests require a matching Harness workspace because only development dependencies use `workspace:*` packages. Runtime peer ranges in `package.json` resolve to the public Harness packages.
+
+From the plugin directory in a matching Harness workspace:
+
+```bash
+CI=true pnpm typecheck
+CI=true pnpm test
+pnpm build
+npm pack --dry-run --json
+```
+
+The release checklist in the repository root distinguishes these keyless gates from the real-API cold-resume test and the external npm installation check.
 
 ## Milestones
 

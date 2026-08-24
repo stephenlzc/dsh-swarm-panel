@@ -10,7 +10,7 @@ DSH Agent Swarm：AI 驱动的多 Agent 编排，支持动态通信拓扑、冷�
 
 ## 快速开始
 
-把插件挂到 cordis.yml（部署侧只为 root Orchestrator 暴露工具面），再叠加内置的代码评审 squad 示例：
+把插件挂到 cordis.yml（部署侧只为 root Orchestrator 暴露工具面），再叠加内置的代码评审 squad 示例。下面的 `workspace:*` 仅适用于 Harness 源码工作区；普通用户应按“安装”章节通过 `dsh plugin` 安装：
 
 ```yaml
 # cordis.yml (overlay onto your base profile, or copy into $DSH_HOME/profiles/<name>/)
@@ -44,7 +44,7 @@ dsh plugin --profile web add file:./dsh-swarm-plugin
 # cordis.yml row config
 plugins:
   dsh-swarm-panel:
-    $: workspace:*
+    $: workspace:* # 仅限源码工作区开发
     config:
       enabled: true # 总开关：false 则不挂任何投影、工具与 effect
       provider: spawn
@@ -71,6 +71,18 @@ plugins:
 头部的 `Swarms: N` 只是计数。点击角色卡或泳道可打开对应子会话。
 
 ![dsh-swarm-panel Conversation Flow 在 DeepSeek Harness web 壳中的宿主合成图](assets/swarm-panel.png)
+
+### UI 图库
+
+这些截图来自确定性的 replay fixture，不包含真实工作区内容或 API 凭证：
+
+| 桌面总览 | 消息详情 | 窄屏布局 |
+| --- | --- | --- |
+| ![桌面总览](assets/swarm-panel-host-desktop.png) | ![消息详情](assets/swarm-panel-host.png) | ![390×844 窄屏布局](assets/swarm-panel-host-narrow.png) |
+
+![Conversation Flow 交互导览](assets/conversation-flow-tour.gif)
+
+导览依次展示桌面总览、选中消息详情和 390×844 响应式布局；它是由同一组脱敏截图组成的 GIF，不代表真实模型输出。
 
 ## 工具集
 
@@ -200,7 +212,22 @@ config:
 
 宿主组装 session projection 能力（`ctx.sessionProjections`）时，插件会注册一个 `swarm` 投影单元，把每个 `swarm/*` 事件增量 fold 成会话级面板模型（`Record<swarmId, SwarmPanelSwarm> | null`）：角色名册与拓扑模式、每条已路由 `swarm/role-message` 及其父子/兄弟归因、群聊 transcript、待答 HITL 请求、上下文变量、群聊引擎状态，以及最新检查点/恢复标记。fold 是增量的——无关事件返回同一状态引用，因此变更推送只会在面板值真正变化时触发。
 
-浏览器半件以 `dsh-swarm-panel/client` 导出（经 package.json 的 `dsh.client` 声明发现）：一个 Conversation Flow 的 `conversation.view` 页签，外加头部的 swarm 计数徽章——无 RPC、无客户端 store，也不发起新的模型请求。该页签始终列在 Chat 和 Trajectory 旁边；徽章在会话还没有任何 swarm 时隐藏。Auto-scroll / Live 只控制视口跟随。空状态覆盖无 swarm、等待投影、projection 错误、无消息、无匹配、已终止和 pending HITL。每个角色泳道可打开该角色的子会话（`ctx.sessions.open`）；打开持久化的子会话会在宿主侧触发冷启动恢复，这就是面板触发恢复的方式。
+浏览器端以 `dsh-swarm-panel/client` 导出（经 package.json 的 `dsh.client` 声明发现）：一个 Conversation Flow 的 `conversation.view` 页签，外加头部的 swarm 计数徽章——无 RPC、无客户端 store，也不发起新的模型请求。该页签始终列在 Chat 和 Trajectory 旁边；徽章在会话还没有任何 swarm 时隐藏。Auto-scroll / Live 只控制视口跟随。空状态覆盖无 swarm、等待投影、projection 错误、无消息、无匹配、已终止和 pending HITL。每个角色泳道可打开该角色的子会话（`ctx.sessions.open`）；打开持久化的子会话会在宿主侧触发冷启动恢复，这就是面板触发恢复的方式。
+
+## 兼容性与开发
+
+当前包面向 DeepSeek Harness `0.1.x` 发布线，以及 Node.js `22.19+` 或 `24+`。运行时消费者通过 Harness profile 安装已发布包；源码级类型检查和测试需要匹配的 Harness 工作区，只有开发依赖使用 `workspace:*`。
+
+在匹配的 Harness 工作区中运行：
+
+```bash
+CI=true pnpm typecheck
+CI=true pnpm test
+pnpm build
+npm pack --dry-run --json
+```
+
+根目录的发布清单区分了这些无 key 门禁、真实 API 冷启动测试和外部安装检查。
 
 ## 已知限制 / Roadmap
 

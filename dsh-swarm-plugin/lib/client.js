@@ -1399,8 +1399,10 @@ window.__ModuleLoader__.load({
 		/**
 		* Client plugin body: register the header action.
 		* @param ctx - client root context.
+		* @param config - optional client config; `enabled: false` disables the panel.
 		*/
-		function apply(ctx) {
+		function apply(ctx, config = {}) {
+			if (config.enabled === false) return;
 			const sessions = ctx.sessions;
 			const actions = () => ({ onOpenSession: (childId) => {
 				sessions.open(childId);

@@ -25,3 +25,73 @@ jobs:
       - uses: docker://rhysd/actionlint:1.7.7
         with:
           args: -color
+
+  package-hygiene:
+    name: package hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.19.0
+      - name: Validate publish metadata
+        working-directory: dsh-swarm-plugin
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs'
+          const pkg = JSON.parse(readFileSync('package.json', 'utf8'))
+          for (const field of ['repository', 'homepage', 'bugs', 'engines']) {
+            if (!pkg[field]) throw new Error(`missing package metadata: ${field}`)
+          }
+          for (const section of ['peerDependencies', 'dependencies']) {
+            for (const [name, range] of Object.entries(pkg[section] ?? {})) {
+              if (String(range).startsWith('workspace:')) throw new Error(`${section}.${name} still uses ${range}`)
+            }
+          }
+          for (const file of pkg.files ?? []) {
+            if (file.includes('*')) continue
+            if (!readFileSync(file)) throw new Error(`unreadable published file: ${file}`)
+          }
+          NODE
+      - name: Inspect npm package contents
+        working-directory: dsh-swarm-plugin
+        run: npm pack --dry-run --json
+
+  harness-source-checks:
+    name: Harness source checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: dsh-v0.1.0-rc.7
+          path: harness
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.19.0
+          cache: pnpm
+          cache-dependency-path: harness/pnpm-lock.yaml
+      - name: Mount this plugin into the matching Harness workspace
+        working-directory: harness
+        run: |
+          rm -rf plugins/dsh-swarm-panel
+          ln -s "$GITHUB_WORKSPACE/dsh-swarm-plugin" plugins/dsh-swarm-panel
+      - name: Install Harness dependencies
+        working-directory: harness
+        # The checked-out plugin is the CI subject, so its public peer/dependency
+        # ranges intentionally differ from the Harness repository's lockfile
+        # importer. The ephemeral CI workspace may resolve that importer afresh.
+        run: pnpm install --no-frozen-lockfile
+      - name: Typecheck plugin
+        working-directory: harness
+        run: CI=true pnpm --filter dsh-swarm-panel run typecheck
+      - name: Test plugin
+        working-directory: harness
+        run: CI=true pnpm --filter dsh-swarm-panel run test
+      - name: Build plugin
+        working-directory: harness
+        run: pnpm --filter dsh-swarm-panel run build

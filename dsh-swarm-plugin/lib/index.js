@@ -2556,6 +2556,7 @@ const swarmPanelModelSchema = z.union([z.record(z.string(), z.object({
 * @param config - deployment config (provider, default model).
 */
 function apply(ctx, config = {}) {
+	if (config.enabled === false) return;
 	const provider = config.provider ?? "spawn";
 	const checkpointFrequency = resolveCheckpointFrequency(config);
 	const humanInputMode = resolveHumanInputMode(config);

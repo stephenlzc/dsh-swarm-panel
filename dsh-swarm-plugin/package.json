@@ -2,6 +2,18 @@
   "name": "dsh-swarm-panel",
   "description": "dsh-swarm-panel: DSH Agent Swarm plugin with Conversation Flow observability, dynamic topology, cold resume, and layered HITL",
   "version": "0.1.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/stephenlzc/dsh-swarm-panel.git",
+    "directory": "dsh-swarm-plugin"
+  },
+  "homepage": "https://github.com/stephenlzc/dsh-swarm-panel#readme",
+  "bugs": {
+    "url": "https://github.com/stephenlzc/dsh-swarm-panel/issues"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
   "publishConfig": {
     "access": "public"
   },
@@ -35,22 +47,26 @@
     "lib/index.d.ts",
     "lib/client.js",
     "cordis.patch.yml",
-    "assets/swarm-panel.png"
+    "assets/swarm-panel.png",
+    "assets/swarm-panel-host.png",
+    "assets/swarm-panel-host-desktop.png",
+    "assets/swarm-panel-host-narrow.png",
+    "assets/conversation-flow-tour.gif"
   ],
   "license": "MIT",
   "peerDependencies": {
-    "@deepseek-ai/cordis": "workspace:*",
-    "@deepseek-ai/dsh-client-runtime": "workspace:*",
-    "@deepseek-ai/dsh-client-ui-conversation": "workspace:*",
-    "@deepseek-ai/dsh-client-ui-slots": "workspace:*",
-    "@deepseek-ai/dsh-session": "workspace:*",
-    "@deepseek-ai/dsh-session-projection": "workspace:*",
-    "@deepseek-ai/dsh-tools": "workspace:*",
-    "@deepseek-ai/dsh-user-questions": "workspace:*"
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-client-ui-conversation": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-session": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-session-projection": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.7",
+    "@deepseek-ai/dsh-user-questions": "^0.1.0-rc.7"
   },
   "dependencies": {
-    "@deepseek-ai/dsh-brand": "workspace:*",
-    "@deepseek-ai/dsh-tools": "workspace:*",
+    "@deepseek-ai/dsh-brand": "^0.0.1-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.7",
     "react": "^18.2.0",
     "zod": "^4.4.3"
   },
