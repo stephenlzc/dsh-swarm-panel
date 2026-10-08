@@ -1,7 +1,7 @@
-import { AgentCancelCause, Session, SessionEvent, SessionId, SessionId as SessionId$2, UserMessage } from "@deepseek-ai/dsh-session";
+import { AgentCancelCause, Session, SessionEvent, SessionId, SessionId as SessionId$2, SessionLogOffset, SessionSeq, UserMessage } from "@deepseek-ai/dsh-session";
 import { Context, Service } from "@deepseek-ai/cordis";
 import { Branded } from "@deepseek-ai/dsh-brand";
-import { SessionEvent as SessionEvent$1, SessionId as SessionId$1 } from "@deepseek-ai/dsh-session/types";
+import { OptionalSessionSeq, SessionEvent as SessionEvent$1, SessionId as SessionId$1, SessionSeq as SessionSeq$1 } from "@deepseek-ai/dsh-session/types";
 
 //#region src/types.d.ts
 /** Stable swarm identity, unique within one orchestrator session. */
@@ -407,7 +407,995 @@ interface SwarmMemoryQueryValue {
   readonly entries: readonly SwarmMemoryHit[];
 }
 //#endregion
-//#region ../../deepseek-harness/packages/typert/protocol/lib/types/types.d.ts
+//#region ../../packages/attachment/attachment/lib/types/error.d.ts
+declare const ATTACHMENT_ERROR_CODES: readonly ["TOO_MANY_IMAGES", "IMAGES_TOO_LARGE", "UNSUPPORTED_IMAGE_TYPE", "INVALID_IMAGE_BASE64", "INVALID_IMAGE", "IMAGE_TYPE_MISMATCH", "IMAGE_TOO_LARGE", "IMAGE_TOO_MANY_PIXELS", "IMAGE_DIMENSION_TOO_LARGE", "INVALID_FILE_BASE64", "INVALID_ATTACHMENT_REF", "ATTACHMENT_CORRUPT", "ATTACHMENT_WRITE_FAILED", "ATTACHMENT_NOT_FOUND", "ATTACHMENT_READ_FAILED", "ATTACHMENT_PROJECTION_UNSUPPORTED", "ATTACHMENT_FILES_UNSUPPORTED"];
+/** Stable attachment failure codes used for protocol error routing. */
+type AttachmentErrorCode = typeof ATTACHMENT_ERROR_CODES[number];
+/**
+ * Stable failures suitable for host RPC error mapping.
+ *
+ * Deliberately re-implements the `HarnessError` shape instead of extending it:
+ * the base lives in `@deepseek-ai/dsh-llm`, which itself depends on this
+ * package (`ImageBlock` references `ImageAttachmentRef`), so sharing the base
+ * would create a dependency cycle. Consumers route on `code`, never on the
+ * prototype chain, so the shapes stay interchangeable at the wire boundary.
+ */
+declare class AttachmentError extends Error {
+  /** Stable machine-routing failure code. */
+  readonly code: AttachmentErrorCode;
+  /**
+   * @param message - human-readable failure description without raw bytes or host paths.
+   * @param code - stable machine-routing code.
+   * @param options - optional chained cause.
+   */
+  constructor(message: string, code: AttachmentErrorCode, options?: ErrorOptions);
+}
+//#endregion
+//#region ../../packages/attachment/attachment/lib/types/brand.d.ts
+/** Opaque content-addressed identifier for one immutable attachment object. */
+type AttachmentId = Branded<'AttachmentId'>;
+/**
+ * Brand a validated storage identifier.
+ * @param value - backend-produced opaque identifier.
+ * @returns the branded identifier.
+ */
+declare function AttachmentId(value: string): AttachmentId;
+/** Opaque deterministic identity for one request-image transformation. */
+type ImageVariantId = Branded<'ImageVariantId'>;
+/**
+ * Brand a validated request-image transformation identifier.
+ * @param value - attachment-provider-produced opaque identifier.
+ * @returns the branded identifier.
+ */
+declare function ImageVariantId(value: string): ImageVariantId;
+//#endregion
+//#region ../../packages/attachment/attachment/lib/types/types.d.ts
+/** Raster image formats accepted by the version-one attachment path. */
+type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
+/** Durable, serializable reference to one immutable normalized image. */
+interface ImageAttachmentRef {
+  /** Opaque storage identifier; never a filesystem path or bearer URL. */
+  attachmentId: AttachmentId;
+  /** Media type verified from the stored bytes. */
+  mediaType: ImageMediaType;
+  /** Exact encoded byte length. */
+  bytes: number;
+  /** Intrinsic encoded width in pixels. */
+  width: number;
+  /** Intrinsic encoded height in pixels. */
+  height: number;
+  /** Optional display name stripped of local path information. */
+  name?: string;
+  /**
+   * Input dimensions after applying EXIF orientation and before normalization
+   * scaling. Present only when normalization reduced the image.
+   */
+  originalDimensions?: {
+    width: number;
+    height: number;
+  };
+}
+/**
+ * Durable, serializable reference to one verbatim stored file. Files are
+ * stored byte-for-byte with no normalization; `attachmentId` is the sha256
+ * digest of exactly those bytes.
+ */
+interface FileAttachmentRef {
+  /** Opaque content-addressed storage identifier; never a filesystem path or bearer URL. */
+  attachmentId: AttachmentId;
+  /** Sanitized display filename, also the stored object's leaf name. */
+  name: string;
+  /** Exact byte length. */
+  bytes: number;
+}
+/** Base64-encoded file upload accompanying one wire request. */
+interface EncodedFileAttachment {
+  /** Canonical base64 encoding of the file bytes. */
+  data: string;
+  /** Optional display name; it is never interpreted as a path. */
+  name?: string;
+}
+/** Request to durably commit one file verbatim. */
+interface SaveFileAttachment {
+  data: Uint8Array;
+  /** Optional browser/provider display name; it is never interpreted as a path. */
+  name?: string;
+}
+/** Request to durably commit one file from bounded byte chunks. */
+interface SaveFileStreamAttachment {
+  /** Exact file bytes in order; providers must not retain the complete sequence in memory. */
+  data: AsyncIterable<Uint8Array>;
+  /** Optional cancellation for source reads and storage writes. */
+  signal?: AbortSignal;
+  /** Optional browser/provider display name; it is never interpreted as a path. */
+  name?: string;
+}
+/** Deployment-resolved limits used by upload admission and request buffering. */
+interface ImageAttachmentLimits {
+  maxImageBytes: number;
+  maxImagesPerMessage: number;
+  maxMessageImageBytes: number;
+  maxImagePixels: number;
+  /** Maximum intrinsic width and maximum intrinsic height in pixels for one image. */
+  maxImageDimension: number;
+  mediaTypes: readonly ImageMediaType[];
+}
+/**
+ * Browser-submitted prompt content accepted by Host prompt endpoints; the
+ * accepting Host promotes image parts to durable references through
+ * `ctx.attachments.admitPromptContent()` before any message is created, so a wire caller can
+ * never cite an attachment it did not upload.
+ */
+type PromptContentPart = {
+  readonly type: 'text';
+  readonly text: string;
+} | {
+  readonly type: 'image';
+  readonly mediaType: ImageMediaType;
+  readonly data: string;
+  readonly name?: string;
+};
+/** Host prompt content whose file receipts are resolved and whose image bytes await admission. */
+type AttachmentAdmissionPart = PromptContentPart | {
+  readonly type: 'file';
+  readonly attachment: FileAttachmentRef;
+};
+/** Host-admitted prompt content with every attachment represented by its durable reference. */
+type AdmittedPromptContentPart = {
+  readonly type: 'text';
+  readonly text: string;
+} | {
+  readonly type: 'image';
+  readonly attachment: ImageAttachmentRef;
+} | {
+  readonly type: 'file';
+  readonly attachment: FileAttachmentRef;
+};
+/** Request to validate and durably commit one image. */
+interface SaveImageAttachment {
+  data: Uint8Array;
+  /** Caller-declared media type, checked against fully decoded bytes. */
+  mediaType: ImageMediaType;
+  /** Optional browser/provider display name; it is never interpreted as a path. */
+  name?: string;
+}
+/** Stored image bytes returned after reference and digest verification. */
+interface StoredImageAttachment {
+  ref: ImageAttachmentRef;
+  data: Uint8Array;
+}
+/** Deterministic request-image target selected by one exact model route for one attachment. */
+interface ImageRequestTarget {
+  /** Target width in pixels; a target above the source keeps the source width. */
+  width: number;
+  /** Target height in pixels; a target above the source keeps the source height. */
+  height: number;
+  /** Encoded-byte target before base64 expansion or Files API upload; the smallest quality-ladder output is kept when no quality fits. */
+  maxBytes: number;
+}
+/** Cached request version derived from one provider-independent normalized attachment. */
+interface RequestImageAttachment {
+  /** Cache and upload-index key over the attachment id, policy, and fixed encoder parameters. */
+  variantId: ImageVariantId;
+  /** Durable normalized attachment from which this request version was derived. */
+  attachment: ImageAttachmentRef;
+  /** Encoded request bytes. */
+  data: Uint8Array;
+  mediaType: ImageMediaType;
+  bytes: number;
+  width: number;
+  height: number;
+  /** Provider-compatible sample depth proven after request encoding. */
+  depth: 'uchar';
+  /** Provider-compatible color space proven after request encoding. */
+  space: 'srgb';
+  /** Whether the encoded request version retains an alpha channel. */
+  hasAlpha: boolean;
+}
+//#endregion
+//#region ../../packages/attachment/attachment/lib/types/index.d.ts
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    attachments: AttachmentStore;
+  }
+}
+/** Immutable binary attachment service. Implementations validate bytes before publishing a reference. */
+declare abstract class AttachmentStore extends Service {
+  constructor(ctx: Context);
+  /** Deployment-resolved image policy used by authoritative and fast-path validation. */
+  abstract readonly imageLimits: ImageAttachmentLimits;
+  /**
+   * Validate one image without persisting it.
+   * Batch callers validate every member before saving any member.
+   * @param input - encoded bytes, declared media type, and optional display name.
+   * @returns completion after the encoded raster has been fully decoded.
+   */
+  abstract validateImage(input: SaveImageAttachment): Promise<void>;
+  /**
+   * Validate one ordered image batch before committing any member.
+   * Validation failures start no writes; storage failures return no partial
+   * references, although already published content-addressed objects may stay
+   * unreachable until a future retention policy collects them.
+   * @param inputs - encoded images in their owning message order.
+   * @returns durable references in the exact input order.
+   */
+  protected validateImageBatch(inputs: readonly SaveImageAttachment[]): void;
+  /**
+   * Validate and durably commit one ordered image batch.
+   * @param inputs - encoded images in owning-message order.
+   * @returns durable normalized attachment references in the same order after every member succeeds.
+   */
+  saveImages(inputs: readonly SaveImageAttachment[]): Promise<readonly ImageAttachmentRef[]>;
+  /**
+   * Admit one Host prompt and replace each uploaded image with its durable reference.
+   * Text and durable file references pass through unchanged. A prompt without image parts performs no storage operation.
+   * @param content - prompt parts in message order after file receipt resolution.
+   * @returns admitted prompt parts in the same order as `content`.
+   * @throws AttachmentError when the image batch is refused.
+   */
+  admitPromptContent(content: readonly AttachmentAdmissionPart[]): Promise<AdmittedPromptContentPart[]>;
+  /**
+   * Decode and durably commit one canonical base64 file upload.
+   * @param input - canonical base64 bytes and optional display name.
+   * @returns the durable content-addressed file reference.
+   * @throws AttachmentError when the encoding or storage operation is refused.
+   */
+  admitEncodedFile(input: EncodedFileAttachment): Promise<FileAttachmentRef>;
+  /**
+   * Identify a failure emitted by this attachment capability by its stable code.
+   * @param error - value caught from an attachment operation.
+   * @returns whether the value is an attachment failure.
+   */
+  isAttachmentError(error: unknown): error is AttachmentError;
+  /**
+   * Validate and durably commit one image before its owning session event is appended.
+   * The returned reference describes the persisted normalized image. When
+   * normalization reduces the raster, its `originalDimensions` records the
+   * orientation-applied input dimensions.
+   * @param input - encoded bytes, declared media type, and optional display name.
+   * @returns the durable content-addressed normalized image reference.
+   */
+  abstract saveImage(input: SaveImageAttachment): Promise<ImageAttachmentRef>;
+  /**
+   * Read one image and verify that bytes still match the recorded reference.
+   * @param ref - durable reference from the session log.
+   * @param signal - optional cancellation for backend read and verification work.
+   * @returns the verified bytes and normalized attachment reference.
+   * @throws the signal reason when aborted, or a storage error when verification fails.
+   */
+  abstract readImage(ref: ImageAttachmentRef, signal?: AbortSignal): Promise<StoredImageAttachment>;
+  /**
+   * Locate the provider-owned normalized object in the harness host filesystem.
+   * @param ref - durable normalized attachment reference.
+   * @returns an absolute host path, or undefined when this backend is not host-file-backed.
+   * @throws an AttachmentError when the durable reference is invalid.
+   */
+  imageHostPath(ref: ImageAttachmentRef): string | undefined;
+  /**
+   * Durably commit one file byte-for-byte before its owning session event is
+   * appended. Files carry no admission limits: any byte content and length is
+   * accepted, and the stored object is the exact submitted bytes. Backends
+   * without verbatim file storage keep this default rejection.
+   * @param input - exact bytes and optional display name.
+   * @returns the durable content-addressed file reference.
+   */
+  saveFile(input: SaveFileAttachment): Promise<FileAttachmentRef>;
+  /**
+   * Durably commit one file byte-for-byte from bounded chunks. Providers must
+   * apply backpressure and must not collect the complete file in memory.
+   * Backends without streamed verbatim storage keep this default rejection.
+   * @param input - ordered exact bytes, optional cancellation, and display name.
+   * @returns the durable content-addressed file reference.
+   */
+  saveFileStream(input: SaveFileStreamAttachment): Promise<FileAttachmentRef>;
+  /**
+   * Read and verify one verbatim stored file as bounded chunks. Providers must
+   * not collect the complete file in memory. Backends without verbatim file
+   * reads keep this default rejection.
+   * @param ref - durable reference from the session log.
+   * @param signal - optional cancellation for backend reads and verification work.
+   * @returns exact file bytes in order; integrity failures reject the iteration.
+   */
+  readFileStream(ref: FileAttachmentRef, signal?: AbortSignal): AsyncIterable<Uint8Array>;
+  /**
+   * Locate the verbatim stored file object in the harness host filesystem.
+   * @param ref - durable file reference.
+   * @returns an absolute host path, or undefined when this backend is not host-file-backed.
+   * @throws an AttachmentError when the durable reference is invalid.
+   */
+  fileHostPath(ref: FileAttachmentRef): string | undefined;
+  /**
+   * Generate or read one deterministic model-request version from the stored normalized image.
+   * @param ref - durable provider-independent normalized attachment reference.
+   * @param target - route-chosen dimensions and byte target; an unmet byte target yields the smallest ladder output.
+   * @param signal - optional cancellation.
+   * @returns request bytes and the cache/upload identity covering every transform input.
+   */
+  readImageRequest(ref: ImageAttachmentRef, target: ImageRequestTarget, signal?: AbortSignal): Promise<RequestImageAttachment>;
+}
+//#endregion
+//#region ../../packages/llm/llm/lib/types/brand.d.ts
+/** Stable identity carried by one message across inbox, log, and model-request boundaries. */
+type MessageId = Branded<'MessageId'>;
+/**
+ * Brand a message identifier.
+ * @param id - the opaque message identifier.
+ * @returns the same string with the message-id brand.
+ */
+declare function MessageId(id: string): MessageId;
+/**
+ * Correlates a model-issued tool call with its result. Provider-issued for
+ * real adapters; synthesized by mocks/assembler fallbacks.
+ */
+type ToolCallId = Branded<'ToolCallId'>;
+/**
+ * Brand a string as a {@link ToolCallId}.
+ * @param id - the provider-issued or synthesized call id.
+ * @returns the same string with the tool-call-id brand.
+ */
+declare function ToolCallId(id: string): ToolCallId;
+/** Provider-issued request identifier retained for diagnostics across package boundaries. */
+type ProviderRequestId = Branded<'ProviderRequestId'>;
+/**
+ * Brand a provider-issued request identifier.
+ * @param id - the opaque provider-issued string.
+ * @returns the same string, branded; no validation is performed.
+ */
+declare function ProviderRequestId(id: string): ProviderRequestId;
+/** Identity of one model streaming attempt, unique within one Agent lifecycle. */
+type LlmAttemptId = Branded<'LlmAttemptId'>;
+/**
+ * Brand one loop-owned streaming attempt identifier.
+ * @param id - the opaque Agent-lifecycle-local identifier.
+ * @returns the same string with the attempt-id brand.
+ */
+declare function LlmAttemptId(id: string): LlmAttemptId;
+/** Adapter-owned identifier for one model's selectable reasoning effort. */
+type ReasoningEffortId = Branded<'ReasoningEffortId'>;
+/**
+ * Brand an adapter-owned reasoning-effort identifier.
+ * @param id - the opaque identifier exposed by one model capability.
+ * @returns the same string, branded; no validation is performed.
+ */
+declare function ReasoningEffortId(id: string): ReasoningEffortId;
+//#endregion
+//#region ../../packages/llm/llm/lib/types/message.d.ts
+/** Provider/model identity and adapter-private replay data for an assistant message. */
+interface AssistantProviderMetadata {
+  /** Provider route that produced the message. */
+  provider: string;
+  /** Provider model id that produced the message. */
+  model: string;
+  /**
+   * Lossless-JSON adapter state needed to replay the provider response.
+   * `LlmRuntime` exposes it to a target adapter only when that adapter instance
+   * currently owns both this historical provider and the target provider.
+   */
+  replayState?: unknown;
+}
+/** Required source of an assistant message produced by a routed model. */
+interface ModelMessageSource extends AssistantProviderMetadata {
+  kind: 'model';
+}
+/** Required source of a tool-role message carrying one tool result. */
+interface ToolMessageSource {
+  kind: 'tool';
+  callId: ToolCallId;
+}
+/** Required source of a system-role message produced by the system-prompt plugin. */
+interface SystemPromptMessageSource {
+  kind: 'system-prompt';
+}
+/** One named contribution to a `snapshot`-form context, in assembly order. */
+interface ContextSnapshotSection {
+  /** The contributing subsystem's name. */
+  readonly name: string;
+  /** That contribution's model-facing text, exactly as assembled. */
+  readonly text: string;
+}
+/**
+ * Producer-declared {@link ContextForm} and the fields that form requires,
+ * mixed into the source types that carry one.
+ *
+ * Discriminated by `form` so a producer cannot select a form without the
+ * fields needed to present it: a `notice` must record its one-line
+ * account, a `snapshot` its sections. Omitting `form` stays valid — an
+ * undeclared context is the documented default.
+ */
+type ContextFormed = {
+  readonly form?: never;
+} | {
+  readonly form: 'instructions';
+} | {
+  readonly form: 'catalog';
+} | {
+  readonly form: 'snapshot'; /** The named contributions this snapshot assembled, in order. */
+  readonly sections: readonly ContextSnapshotSection[];
+} | {
+  readonly form: 'notice'; /** One-line account of what happened, shown without expanding the row. */
+  readonly summary: string;
+} | {
+  readonly form: 'relay';
+} | {
+  readonly form: 'recall';
+};
+/**
+ * Where a message (or injected content) came from, in the harness's own
+ * vocabulary. Merge-extensible sum type — each producer declares its own
+ * `kind` in its own module; there is no shared catch-all `plugin` kind.
+ * Model and tool sources answer their role messages; user messages carry any
+ * producer's kind, and consumers fall through unknown kinds.
+ */
+interface MessageSourceMap {
+  user: {
+    kind: 'user';
+  };
+  model: ModelMessageSource;
+  tool: ToolMessageSource;
+  'system-prompt': SystemPromptMessageSource;
+}
+/** Any known message source, derived from {@link MessageSourceMap}; switch on `kind` and fall through unknowns (merge-extensible). */
+type MessageSource = MessageSourceMap[keyof MessageSourceMap];
+/** Shared immutable fields of every conversation message. */
+interface MessageBase {
+  /** Stable identity preserved across every representation boundary. */
+  readonly id: MessageId;
+  /** Exact model-facing blocks. */
+  readonly content: readonly ContentBlock[];
+  /** Required source fields supplied by the producer.
+   * @persistenceSource user developer
+   */
+  readonly source: MessageSource;
+}
+/** A rendered system prompt attributed to the system-prompt producer; empty content sends no prompt. */
+interface SystemMessage extends MessageBase {
+  readonly role: 'system';
+  readonly source: MessageSourceMap['system-prompt'];
+}
+/** Incremental agent session changes in conversation order, currently tool additions and removals. */
+interface DeveloperMessage extends MessageBase {
+  readonly role: 'developer';
+}
+/** A user-role specialization of the shared message representation. */
+interface UserMessage$1 extends MessageBase {
+  readonly role: 'user';
+}
+/** A model-produced assistant specialization of the shared message representation. */
+interface AssistantMessage extends MessageBase {
+  readonly role: 'assistant';
+  readonly source: ModelMessageSource;
+}
+/** A first-class tool-role message carrying the result of one tool invocation. */
+interface ToolResultMessage extends MessageBase {
+  readonly role: 'tool';
+  readonly source: ToolMessageSource;
+  /** Provider-issued id of the tool call this message answers. */
+  readonly toolCallId: ToolCallId;
+  /** Whether the tool invocation failed. */
+  readonly isError?: boolean;
+}
+/**
+ * The conversation messages persisted by Session, keyed by role. This map is
+ * closed because every model-visible role must have a durable Session event
+ * and an adapter projection.
+ */
+interface MessageRoleMap {
+  system: SystemMessage;
+  developer: DeveloperMessage;
+  user: UserMessage$1;
+  assistant: AssistantMessage;
+  tool: ToolResultMessage;
+}
+/** Any persisted conversation message, discriminated by its `role`. */
+type Message = MessageRoleMap[keyof MessageRoleMap];
+//#endregion
+//#region ../../packages/llm/llm/lib/types/types.d.ts
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    /**
+     * The provider topology changed: an adapter registered or unregistered
+     * routes, or the configurable-provider directory gained or lost entries.
+     * This payload-free registry notification fires at each commit point
+     * (including registration disposal); consumers re-read `listProviders()`,
+     * `listModels()`, or `listConfigurableProviders()` for the new state.
+     * Observer failures are contained and cannot veto the registry mutation.
+     * @mode emit
+     */
+    'llm/adapters-updated'(): void;
+  }
+}
+/** Serializable provider or transport failure facts; policy decides whether they are retryable. */
+interface LlmFailure {
+  /** Human-readable provider or transport failure. */
+  readonly message: string;
+  /** Stable provider-neutral machine-routing code. */
+  readonly code: string;
+  /** HTTP status returned by the provider, when available. */
+  readonly status?: number;
+  /** Provider-requested delay in milliseconds, when valid and available. */
+  readonly providerRetryAfterMs?: number;
+  /** Opaque provider-issued request identifier for diagnostics. */
+  readonly requestId?: ProviderRequestId;
+  /**
+   * With code `IMAGE_OFFLOAD_REQUIRED`: how many more of the oldest retained
+   * image occurrences the route needs offloaded before the same request fits
+   * its exact byte accounting. `dsh-compaction-image-offload` records the
+   * selected occurrences in an `image/offload` event and retries the step.
+   */
+  readonly offloadImages?: number;
+}
+/** Plain text visible to the end user. */
+interface TextBlock {
+  type: 'text';
+  text: string;
+}
+/** Reasoning / thinking content, distinct from visible text. */
+interface ReasoningBlock {
+  type: 'reasoning';
+  text: string;
+}
+/**
+ * A durable raster image reference, valid in user or assistant content. The
+ * block is deliberately role-neutral; assistant-side rendering is forward
+ * compatibility — the current production adapters declare text-only output,
+ * so only user messages may carry images.
+ */
+interface ImageBlock {
+  type: 'image';
+  /** Immutable bytes and intrinsic display metadata owned by the attachment service. */
+  attachment: ImageAttachmentRef;
+  /**
+   * Derived from a durable image-offload decision or preserved by a message
+   * rewrite. Every route sends placeholder text naming the image and its
+   * available read-only path instead of image bytes.
+   */
+  offloaded?: true;
+}
+/**
+ * A durable verbatim file reference, valid in user content. Files never reach
+ * a provider natively: request assembly projects every occurrence to
+ * deterministic handle text (name, byte size, and the read-only saved path),
+ * so adapters and providers see text in its place while the durable log keeps
+ * the structured reference for presentation and authorization.
+ */
+interface FileBlock {
+  type: 'file';
+  /** Immutable verbatim bytes and display metadata owned by the attachment service. */
+  attachment: FileAttachmentRef;
+}
+/** A tool invocation requested by the model. */
+interface ToolCallBlock {
+  type: 'tool-call';
+  /** Provider-issued call id; correlates with the matching tool result. */
+  id: ToolCallId;
+  name: string;
+  /** Raw JSON string as produced by the model. */
+  arguments: string;
+}
+/** Activates a tool definition from the developer event's referenced request header. */
+interface ToolAdditionBlock {
+  type: 'tool-addition';
+  /** Name of exactly one tool in the referenced historical header. */
+  toolName: string;
+  /**
+   * Reserved against inline definitions; the historical request header owns the schema.
+   * @persistenceReserved
+   */
+  tool?: never;
+}
+/** Records the dynamic removal of a tool identified by its session-local name. */
+interface ToolRemovalBlock {
+  type: 'tool-removal';
+  toolName: string;
+}
+/**
+ * Merge-extensible content blocks keyed by `type`. New core blocks must land
+ * with adapter, UI, and compaction support. Tool-change blocks belong to
+ * developer messages; `projectToolUpdates` selects what each route receives.
+ */
+interface ContentBlockMap {
+  'text': TextBlock;
+  'reasoning': ReasoningBlock;
+  'image': ImageBlock;
+  'file': FileBlock;
+  'tool-call': ToolCallBlock;
+  'tool-addition': ToolAdditionBlock;
+  'tool-removal': ToolRemovalBlock;
+}
+/** The block `type` tag vocabulary; widens as plugins add entries to {@link ContentBlockMap}. */
+type ContentBlockType = keyof ContentBlockMap;
+/** Any known content block, derived from {@link ContentBlockMap}; switch on `type` and fall through unknowns (merge-extensible). */
+type ContentBlock = ContentBlockMap[ContentBlockType];
+/**
+ * Why a model response stopped.
+ * Merge-extensible so adapters can surface provider-specific reasons.
+ */
+interface FinishReasonMap {
+  'stop': {
+    kind: 'stop';
+  };
+  'tool-calls': {
+    kind: 'tool-calls';
+  };
+  'max-tokens': {
+    kind: 'max-tokens';
+  };
+  'aborted': {
+    kind: 'aborted';
+    failure: LlmFailure;
+  };
+  'error': {
+    kind: 'error';
+    failure: LlmFailure;
+  };
+}
+/** Any known finish reason, derived from {@link FinishReasonMap}; switch on `kind` and fall through unknowns (merge-extensible). */
+type FinishReason = FinishReasonMap[keyof FinishReasonMap];
+/**
+ * Token accounting for one model call (cache fields are optional).
+ *
+ * Counts are DISJOINT: `inputTokens` is uncached input only; cached input is
+ * reported separately as `cacheReadTokens`/`cacheWriteTokens` (billed input =
+ * sum of the three). Adapters whose providers fold cache hits into a total
+ * prompt count (DeepSeek's `prompt_tokens`) subtract them out.
+ */
+interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  /**
+   * Exact full-call total including aggregate prompt and output tokens.
+   *
+   * Adapters preserve a provider total or derive it from authoritative
+   * aggregate prompt/output counters; they omit it when unavailable or
+   * inconsistent.
+   */
+  totalTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  reasoningTokens?: number;
+}
+/**
+ * Request price of one ordered image occurrence under one exact model route's
+ * request projection. Every occurrence resolves to the pair the wire actually
+ * carries: provider visual tokens for a retained image, plus the model-visible
+ * text sent with or instead of it (request-preview handle, offload placeholder,
+ * or text-only substitution). The caller prices `text` with its own text
+ * estimator so provider pricing never fixes a text tokenization.
+ */
+interface LlmImageRequestPrice {
+  /** Provider visual tokens for the retained request image; 0 when only text represents this occurrence. */
+  visualTokens: number;
+  /** Model-visible text sent for this occurrence, to be priced by the caller's text estimator. */
+  text: string;
+}
+/**
+ * Provider-side request-image pricing for one exact model route. Implemented
+ * by adapters whose provider charges visual tokens; consumers (the token
+ * meter) resolve it synchronously per measurement, so implementations must not
+ * perform I/O.
+ */
+interface LlmImageRequestPricing {
+  /**
+   * Price every image occurrence of one request projection.
+   * @param images - surface image blocks in request order, one entry per occurrence; an `offloaded` block
+   *   is priced as its placeholder text.
+   * @returns one price per occurrence, aligned by index with `images`.
+   */
+  priceImages(images: readonly ImageBlock[]): readonly LlmImageRequestPrice[];
+}
+/** Display metadata for one registered provider route. */
+interface LlmProviderInfo {
+  /** Provider route key used by {@link GenerateOptions.provider}. */
+  id: string;
+  /** Human-readable provider name for selectors and diagnostics. */
+  name: string;
+}
+/** Merge-extensible provider model modality vocabulary. */
+interface ModelModalityMap {
+  text: 'text';
+  image: 'image';
+}
+/** Any declared provider model modality. */
+type ModelModality = ModelModalityMap[keyof ModelModalityMap];
+/**
+ * One provider route an adapter plugin can activate through configuration,
+ * whether or not the route is currently registered. Configuration surfaces
+ * merge this directory with `listProviders()` to offer every configurable
+ * provider alongside its live/dormant state.
+ */
+interface LlmConfigurableProvider {
+  /** Provider route key this entry activates when configured. */
+  provider: string;
+  /** Human-readable provider name for configuration surfaces. */
+  displayName: string;
+  /** User-settings namespace whose section configures this provider. */
+  settingsNs: string;
+  /**
+   * Path from that namespace's section root to this provider's profile
+   * object; empty when the whole section is the profile.
+   */
+  settingsPath: readonly string[];
+  /**
+   * Whether the owning adapter knows this route only because configuration
+   * declared it — a gateway or self-hosted server it ships nothing about.
+   * Absent means the adapter draws no such distinction; false means it does
+   * and this route is one of its own. Only the adapter can answer: a stored
+   * profile is how a user-added route AND a corrected shipped one both look
+   * from outside.
+   */
+  declared?: boolean;
+  /** Configuration diagnostic for repair; unaffected models may remain serviceable. */
+  error?: string;
+}
+/**
+ * One interrogation of a provider endpoint that configuration has not stored
+ * yet. Configuration surfaces send the draft a user is still editing, so the
+ * request carries the endpoint and credential directly instead of naming a
+ * route: a provider being added has no route to name.
+ */
+interface LlmModelDiscoveryRequest {
+  /**
+   * Route the draft is editing, when it edits an existing one. A route whose
+   * adapter already knows its models answers from that knowledge instead of
+   * asking the endpoint — the adapter's own registry is the better answer, and
+   * it costs no network call.
+   */
+  provider?: string;
+  /**
+   * Endpoint to interrogate. Optional because a route the adapter already
+   * describes needs none; a route it does not must supply one.
+   */
+  baseURL?: string;
+  /** Wire protocol the endpoint speaks, when the draft names one. */
+  api?: string;
+  /** Credential for this interrogation alone; the harness never stores it. */
+  apiKey?: string;
+}
+declare module '@deepseek-ai/dsh-typert-protocol' {
+  interface RemoteErrorDetailsMap {
+    /** A draft provider interrogation refused or failed. */
+    'llm/model-discovery-rejected': {
+      readonly settingsNs: string;
+      readonly baseURL?: string;
+    };
+  }
+}
+/**
+ * One model an endpoint reports about itself. Every field but the id is
+ * optional because most provider listings disclose an id and nothing else;
+ * a surface adopting one of these still owes the capacities its adapter needs.
+ */
+interface LlmDiscoveredModel {
+  /** Model id the endpoint accepts. */
+  id: string;
+  /** Human-readable name when the endpoint supplies one. */
+  name?: string;
+  /** Maximum combined request and response context, when disclosed. */
+  contextWindow?: number;
+  /** Maximum output tokens, when disclosed. */
+  maxTokens?: number;
+  /** Accepted input types when disclosed by the catalog or endpoint; absent means unknown. */
+  inputModalities?: readonly ModelModality[];
+}
+/** One adapter-discovered model; catalog membership is advisory, not request validation. */
+interface LlmModelInfo {
+  /** Provider route that owns this model entry. */
+  provider: string;
+  /** Model id passed to {@link GenerateOptions.model}. */
+  id: string;
+  /** Human-readable model name for selectors. */
+  name: string;
+  /** Optional user-facing distinction from otherwise similar models. */
+  description?: string;
+  /** Accepted request modalities; absent means unknown, while an explicit omission is negative capability. */
+  inputModalities?: readonly ModelModality[];
+}
+/** Provider-owned context capacity for one exact provider/model route. */
+interface LlmModelContext {
+  /** Maximum combined request and response context in tokens. */
+  contextWindow: number;
+}
+/** Display metadata for one adapter-owned reasoning effort. */
+interface LlmReasoningEffortInfo {
+  /** Opaque stable value accepted by {@link GenerateOptions.reasoningEffort}. */
+  id: ReasoningEffortId;
+  /** Human-readable effort name for selectors and diagnostics. */
+  name: string;
+  /** Optional user-facing distinction from otherwise similar efforts. */
+  description?: string;
+}
+/** Selectable reasoning efforts for one exact provider/model route. */
+interface LlmModelReasoningInfo {
+  /** Supported efforts in adapter-preferred display order. */
+  efforts: readonly LlmReasoningEffortInfo[];
+  /**
+   * Adapter-configured default materialized into requests when callers omit
+   * an effort. Absence preserves the provider's own default.
+   */
+  defaultEffort?: ReasoningEffortId;
+}
+/**
+ * How a model applies a system prompt that changes mid-conversation.
+ * `'in-history'`: the model reads the latest `system` message at any position
+ * of `messages` as the complete effective system prompt, so a changed prompt
+ * can follow the cached history instead of rewriting message 0.
+ */
+type SystemPromptUpdate = 'in-history';
+/**
+ * How a model accepts native tool declarations that change mid-conversation.
+ * `'addition-only'`: the model reads a `tool-addition` block in a later
+ * developer message as activating a tool declared with `deferLoading`, so an
+ * added tool follows the cached history instead of rewriting the declaration
+ * list. `'in-history'`: the model additionally reads `tool-removal` blocks,
+ * so a removed tool keeps its declaration and the removal follows the history.
+ * Absent means every request declares the complete current tool list.
+ */
+type ToolUpdate = 'in-history' | 'addition-only';
+/** Exact-route model metadata resolved by its owning adapter. */
+interface LlmResolvedModelInfo extends LlmModelInfo {
+  /** Provider-owned context capacity when known. */
+  context?: LlmModelContext;
+  /** Adapter-configured per-request output cap materialized when callers omit one. */
+  defaultMaxTokens?: number;
+  /** Adapter-owned selectable reasoning levels when exposed. */
+  reasoning?: LlmModelReasoningInfo;
+  /** Declared mid-conversation system prompt handling; absent means only a leading system message is read. */
+  systemPromptUpdate?: SystemPromptUpdate;
+  /** Declared mid-conversation tool declaration handling; absent means every request declares the complete tool list. */
+  toolUpdate?: ToolUpdate;
+}
+/**
+ * Adapter-private lossless-JSON state for replaying a successful response,
+ * carried by a terminal `finish` chunk and stored on the assembled assistant
+ * message's model source. Both halves stay opaque to the harness; only the
+ * split is shared vocabulary, so assembly can keep stored metadata aligned
+ * with stored content without reading either half.
+ */
+interface ReplayEnvelope {
+  /** Response-level adapter-private metadata (ids, native stop reason). */
+  response: unknown;
+  /**
+   * Per-block adapter-private metadata, one entry per emitted block in
+   * first-seen stream order. When assembly drops a block it drops the entry at
+   * the same position; entries whose length does not match the emitted block
+   * count discard the whole envelope. An adapter whose metadata is independent
+   * of block structure omits this field and the envelope passes through
+   * assembly unchanged.
+   */
+  blocks?: readonly unknown[];
+}
+/**
+ * Raw streaming protocol emitted by adapters.
+ * Block indexes correlate interleaved deltas, and `block-end` carries the
+ * assembled block. Adapters emit usage before the terminal finish and nothing
+ * afterward; tool arguments remain raw JSON strings. An adapter implementation
+ * may throw, but `LlmRuntime.stream()` normalizes that failure to a terminal
+ * `error` or `aborted` finish before exposing it to consumers.
+ */
+type StreamChunk = {
+  type: 'block-start';
+  index: number;
+  blockType: ContentBlockType;
+} | {
+  type: 'text-delta';
+  index: number;
+  text: string;
+} | {
+  type: 'reasoning-delta';
+  index: number;
+  text: string;
+} | {
+  type: 'tool-call-delta';
+  index: number;
+  id: ToolCallId;
+  name?: string;
+  argumentsDelta: string;
+} | {
+  type: 'block-end';
+  index: number;
+  block: ContentBlock;
+} | {
+  type: 'usage';
+  usage: TokenUsage;
+} | {
+  type: 'finish';
+  reason: FinishReason; /** Replay metadata for a successful response; see {@link ReplayEnvelope}. */
+  replayState?: ReplayEnvelope;
+};
+/**
+ * JSON-schema description of a tool, as sent to the model.
+ *
+ * Declared here (not in dsh-tools) because it is part of {@link GenerateOptions};
+ * dsh-tools' ToolDefinition and dsh-system-prompt's PromptAssembly both import
+ * it from this package.
+ */
+interface ToolSchema {
+  /**
+   * Requests deferred loading of the tool definition into model context,
+   * independently of whether a tool-addition block records the tool.
+   * Uses Anthropic's defer_loading terminology.
+   */
+  deferLoading?: true;
+  name: string;
+  description: string;
+  /** JSON Schema object for the arguments. */
+  parameters: Record<string, unknown>;
+}
+/** User input for one LLM request; it has no durable Session identity or source. */
+interface RequestUserInput {
+  readonly role: 'user';
+  readonly content: UserMessage$1['content'];
+  readonly id?: never;
+  readonly source?: never;
+}
+/** A durable conversation message or a user input used only for one request. */
+type RequestMessage = Message | RequestUserInput;
+/** Logged tool declarations and update identities since the last declaration reset. */
+interface ToolHistory {
+  /** Complete active declarations at the start of this history. */
+  readonly tools: readonly ToolSchema[];
+  /** Ordered developer messages, with additions resolved from their historical headers. */
+  readonly updates: readonly {
+    /** Identity used to locate this update in the derived request history. */readonly messageId: MessageId; /** Added definitions resolved from the event's referenced request header. */
+    readonly additions: readonly ToolSchema[];
+  }[];
+}
+/** A single model request, fully assembled. */
+interface GenerateOptions {
+  /** Registered provider route selecting the adapter instance. */
+  provider: string;
+  model: string;
+  /** Adapter-owned reasoning effort selected for this exact model. */
+  reasoningEffort?: ReasoningEffortId;
+  /**
+   * Ordered conversation messages, exactly as the provider sees them. A
+   * loop-built request passes the derived history (dsh-agent-loop), whose
+   * leading system-role message carries the system prompt; a hand-built
+   * one-shot may include identity-free user inputs.
+   */
+  messages: RequestMessage[];
+  /**
+   * System prompt text for one-shot callers; adapters map it to the provider's
+   * system slot ahead of `messages`. Loop-built requests leave it undefined.
+   */
+  system?: string;
+  /** Tool schemas (adapters map to the provider's `tools` field). */
+  tools?: ToolSchema[];
+  /** Session-folded tool history used for route projection; omission sends complete declarations without tool updates. */
+  toolHistory?: ToolHistory;
+  temperature?: number;
+  maxTokens?: number;
+  /**
+   * Stop sequences: generation halts as soon as the model produces any one of
+   * these strings (adapters map to the provider's stop field, e.g. OpenAI
+   * `stop`). The stop string itself is not included in the output.
+   */
+  stop?: string[];
+  signal?: AbortSignal;
+  /**
+   * Session identity stamped by the loop for request routing. Replay uses it
+   * to separate cursors; adapters may map it to model-hidden transport metadata.
+   */
+  sessionId?: Branded<'SessionId'>;
+  /**
+   * Provider-neutral classification for an auxiliary model call. Adapters may
+   * map the purpose to model-hidden transport metadata or purpose-specific
+   * generation policy. Ordinary conversation requests leave it unset.
+   */
+  purpose?: 'compaction' | 'session-title';
+}
+//#endregion
+//#region ../../packages/typert/protocol/lib/types/owned-value.d.ts
+/** Generic invocation-owned values returned by synchronous Client Context resolvers. */
+/** Shared identity across independently bundled Context providers and Gateway. */
+declare const TYPERT_OWNED_VALUE: unique symbol;
+/** A borrowed payload paired with the invocation owner's idempotent cleanup. */
+interface TypertOwnedValue<Value> extends Disposable {
+  readonly [TYPERT_OWNED_VALUE]: true;
+  readonly value: Value;
+}
+//#endregion
+//#region ../../packages/typert/protocol/lib/types/types.d.ts
 declare const LOOKUP_HOST: unique symbol;
 declare const LOOKUP_WIRE: unique symbol;
 declare const CONTEXT_WIRE: unique symbol;
@@ -445,8 +1433,21 @@ interface TypertSchema<Output = unknown> {
 /** Codec attached to one invocation parameter or result. */
 type TypertCodec = {
   readonly mode: 'strict';
-  readonly typeSymbol: string;
-  readonly schema: TypertSchema;
+  readonly typeSymbol: string; /** Materialize and return the process-realm schema on first boundary use. */
+  readonly create: () => TypertSchema;
+  /**
+   * Decode a unary result whose fields require type-specific handling.
+   * @param value - result reconstructed by the RPC carrier.
+   * @returns the validated result, retaining native byte views.
+   */
+  readonly decode?: (value: unknown) => unknown;
+  /**
+   * Project typed binary fields into RPC result attachments.
+   * @param value - native unary result.
+   * @param writeBytes - records a byte view at its result-relative path and returns its JSON placeholder.
+   * @returns JSON metadata with untouched JSON subtrees retained.
+   */
+  readonly encode?: (value: unknown, writeBytes: (bytes: Uint8Array, path: readonly (string | number)[]) => null) => unknown;
 } | {
   readonly mode: 'src-json';
 };
@@ -483,6 +1484,8 @@ interface InvocationDescriptor {
   readonly method: string;
   /** Service member invoked when the exported method name is an alias. */
   readonly implementation?: string;
+  /** Absent for unary calls; stream calls deliver every yielded item as the Host produced it. */
+  readonly mode?: 'stream';
   /** Receiver selection mode. */
   readonly invocation: {
     readonly kind: 'direct';
@@ -494,19 +1497,78 @@ interface InvocationDescriptor {
   };
   /** Optional consuming-Context projection for one direct lookup parameter. */
   readonly scope?: {
-    /** Context kind whose Client binder supplies the identity. */readonly context: string; /** Lookup parameter wire field replaced by the Context identity. */
+    /** Context kind whose Client adapter supplies the identity. */readonly context: string; /** Lookup parameter wire field replaced by the Context identity. */
     readonly wire: string;
   };
   /** Ordered business parameters. */
   readonly parameters: readonly InvocationParameterDescriptor[];
+  /**
+   * Client-to-Host items of the same logical stream, generated from the `In`
+   * type argument of the method's `RemoteStream<Out, In>` return type; absent
+   * when `In` is `never`. The method reads the items through
+   * `RemoteInvocation.uplink()`, so nothing enters the parameter list.
+   */
+  readonly uplink?: {
+    /** Codec validating every uplink item before `uplink()` delivers it. */readonly codec: TypertCodec;
+  };
   /** Transport cancellation injected after business parameters instead of entering wire args. */
   readonly cancellation?: {
     /** Reserved final Host method parameter. */readonly parameter: 'signal';
   };
-  /** Codec for the resolved method result. */
+  /** Codec for the unary result or each yielded stream item. */
   readonly result: TypertCodec;
   /** Source declaration used only for diagnostics. */
   readonly sourceLocation?: InvocationSourceLocation;
+}
+/**
+ * Opaque identity of one Peer: a party admitted to this Host by the connection
+ * layer. "Peer" is a connection-layer word; the browser application keeps the
+ * word "Client".
+ */
+type PeerId = Branded<'PeerId'>;
+/**
+ * One Peer's session on this Host. Connection owns it: `ctx` is the Cordis
+ * scope that owns connection-lifetime registrations and is disposed with the
+ * Peer. Who the Peer is and what it may do are not recorded here.
+ */
+interface PeerScope {
+  readonly id: PeerId;
+  readonly ctx: Context;
+  /**
+   * Tear down every registration made through `ctx`.
+   * @returns settles once the scope has quiesced; racing calls share one completion.
+   */
+  dispose(): Promise<void>;
+}
+/**
+ * The context of one Remote call, reachable inside the receiving method as
+ * `this.ctx.invocation`. The Gateway derives the receiver from a Context that
+ * carries it, so no parameter is injected and nothing crosses the wire.
+ */
+interface RemoteInvocation {
+  readonly request: {
+    readonly namespace: string;
+    readonly method: string;
+    readonly args: Readonly<Record<string, unknown>>;
+  };
+  /** Cordis service key of the receiving Service. */
+  readonly service: string;
+  /** Peer the call speaks for; an in-process carrier speaks for the operator. */
+  readonly peer: PeerScope;
+  /** Carrier cancellation: Client cancel, socket close, or an uplink failure. */
+  readonly signal: AbortSignal;
+  /**
+   * The Client's uplink items for this call. Available once; a second call
+   * throws. With an uplink codec on the descriptor every item is decoded to
+   * `In`; without one items arrive as `unknown` after a JSON-safety check.
+   * Iteration ends when the Client ends its uplink; when the method finishes
+   * its downlink the Gateway calls the iterator's `return()` and unread items
+   * are dropped. `In` is the caller's assertion: the runtime decodes by the
+   * descriptor and does not cross-check it.
+   * @template In - item type the caller reads; the descriptor codec decides what arrives.
+   * @returns the single-consumer uplink iterable.
+   */
+  uplink<In = unknown>(): AsyncIterable<In>;
 }
 /** Generated Host contract selected explicitly by a Client assembly. */
 interface TypertRemoteContribution {
@@ -551,29 +1613,35 @@ interface TypertLookupDefinition {
   /** Canonical wire type symbol used by strict generation. */
   readonly wireTypeSymbol: string;
 }
-/** Host resolver for one scoped Remote kind. */
-interface TypertHostContextProvider<Wire = unknown> {
+/** Host wire-to-Context resolver plus the declaration used by strict Remote methods. */
+interface TypertHostContextAdapter<Wire = unknown> {
   /** Wire field carrying the Context identity. */
   readonly wire: string;
   /** Canonical wire type symbol used by strict generation. */
   readonly wireTypeSymbol: string;
   /**
-   * Resolve a wire identity to its live scoped Context.
+   * Resolve a validated wire identity to a live Host Context.
    * @param id - validated wire identity.
-   * @returns the scoped Context, or `undefined` when unavailable.
+   * @returns the Context, or `undefined` when it is unavailable.
    */
   resolve(id: Wire): Context | undefined | Promise<Context | undefined>;
 }
-/** Composition-owned resolver replacing one Host Context provider's default lookup policy. */
+/** Composition-owned resolver replacing one Host Context adapter's default lookup policy. */
 type TypertHostContextResolver<Wire = unknown> = (id: Wire) => Context | undefined | Promise<Context | undefined>;
-/** Client resolver for the identity carried by the calling scoped Context. */
-interface TypertClientContextBinder<Wire = unknown> {
+/** Client-side bidirectional Context adapter. */
+interface TypertClientContextAdapter<Wire = unknown> {
   /**
-   * Read the Remote identity represented by a calling Context.
-   * @param ctx - Context rebound by the Cordis service tracker.
-   * @returns the wire identity, or `undefined` when the Context has the wrong scope.
+   * Read the identity represented by a live Client Context.
+   * @param ctx - Client Context inspected by a scoped Remote caller.
+   * @returns the wire identity, or `undefined` for another Context kind.
    */
   identity(ctx: Context): Wire | undefined;
+  /**
+   * Resolve a validated identity synchronously for one Client invocation.
+   * @param id - validated wire identity.
+   * @returns a borrowed or invocation-owned Client Context, or undefined when unavailable.
+   */
+  resolve(id: Wire): Context | TypertOwnedValue<Context> | undefined;
 }
 /** Notification emitted after a Typert runtime registry changes. */
 interface TypertRegistryChange {
@@ -662,17 +1730,17 @@ interface TypertLookupRegistry {
    */
   subscribe(listener: TypertRegistryListener): TypertDisposer;
 }
-/** Runtime registry for Host Context resolvers and Client Context binders. */
+/** Runtime registry for the Host and Client adapters of each Context kind. */
 interface TypertContextRegistry {
   /**
-   * Register a Host Context resolver.
+   * Register a Host Context adapter.
    * @param key - merge-declared Context key.
-   * @param provider - owning package's Host resolver.
-   * @returns disposer withdrawing the exact provider.
+   * @param adapter - owning package's Host resolver and wire declaration.
+   * @returns disposer withdrawing the exact adapter.
    */
-  registerHost<K extends StringKeyOf<TypertContextMap>>(key: K, provider: TypertHostContextProvider<TypertContextWire<TypertContextMap[K]>>): TypertDisposer;
+  registerHost<K extends StringKeyOf<TypertContextMap>>(key: K, adapter: TypertHostContextAdapter<TypertContextWire<TypertContextMap[K]>>): TypertDisposer;
   /**
-   * Override one Host Context key's identity policy for the calling fiber.
+   * Override one Host Context key's resolution policy for the calling fiber.
    * Configuration may precede provider registration and restores the provider's default resolver on disposal.
    * @param key - merge-declared Context key.
    * @param resolver - composition-owned resolver used by every Host Context lookup of this key.
@@ -680,26 +1748,26 @@ interface TypertContextRegistry {
    */
   configureHost<K extends StringKeyOf<TypertContextMap>>(key: K, resolver: TypertHostContextResolver<TypertContextWire<TypertContextMap[K]>>): TypertDisposer;
   /**
-   * Register a Client Context identity binder.
+   * Register a Client Context adapter.
    * @param key - merge-declared Context key.
-   * @param binder - Client scope identity resolver.
-   * @returns disposer withdrawing the exact binder.
+   * @param adapter - owning package's bidirectional Client projection.
+   * @returns disposer withdrawing the exact adapter.
    */
-  registerClient<K extends StringKeyOf<TypertContextMap>>(key: K, binder: TypertClientContextBinder<TypertContextWire<TypertContextMap[K]>>): TypertDisposer;
+  registerClient<K extends StringKeyOf<TypertContextMap>>(key: K, adapter: TypertClientContextAdapter<TypertContextWire<TypertContextMap[K]>>): TypertDisposer;
   /**
-   * Look up a Host Context resolver.
+   * Look up a Host Context adapter.
    * @param key - descriptor Context key.
-   * @returns the provider, or `undefined` when absent.
+   * @returns the adapter, or `undefined` when absent.
    */
-  getHost(key: string): TypertHostContextProvider | undefined;
+  getHost(key: string): TypertHostContextAdapter | undefined;
   /**
-   * Look up a Client Context binder.
+   * Look up a Client Context adapter.
    * @param key - descriptor Context key.
-   * @returns the binder, or `undefined` when absent.
+   * @returns the adapter, or `undefined` when absent.
    */
-  getClient(key: string): TypertClientContextBinder | undefined;
+  getClient(key: string): TypertClientContextAdapter | undefined;
   /**
-   * Observe later Context provider changes.
+   * Observe later Context adapter changes.
    * @param listener - synchronous contained observer.
    * @returns disposer for this subscription.
    */
@@ -715,10 +1783,135 @@ interface TypertRegistryContract {
 declare module '@deepseek-ai/cordis' {
   interface Context {
     typert: TypertRegistryContract;
+    /**
+     * The Remote call this Context was derived for, or `undefined` on a
+     * Context no Remote call derived. A Service method reads it as
+     * `this.ctx.invocation`.
+     */
+    readonly invocation: RemoteInvocation | undefined;
   }
 }
 //#endregion
-//#region ../../deepseek-harness/packages/core/scope/lib/types/index.d.ts
+//#region ../../packages/typert/protocol/lib/types/index.d.ts
+/** Options for an explicit Service-to-Gateway binding. */
+interface TypertGatewayBindingOptions {
+  /** Wire namespace; defaults to the Cordis service key. */
+  readonly namespace?: string;
+}
+/** Visible declaration that one Service participates in Typert Gateway export. */
+interface TypertGatewayBinding<Service extends object = object> {
+  readonly service: Service;
+  readonly serviceKey: string;
+  readonly namespace: string;
+}
+/** Cordis Service base that exposes its registered name through Typert Gateway. */
+declare abstract class TypertRemoteService<out T = never> extends Service<T> {
+  /** Visible binding consumed by the Gateway's source-mode discovery. */
+  readonly typertRemote: TypertGatewayBinding<this>;
+  /**
+   * Register the Service and bind the same key to Typert Gateway.
+   * @param ctx - owning Cordis Context.
+   * @param serviceKey - exact Cordis service key and default wire namespace.
+   * @param options - optional distinct wire namespace.
+   */
+  protected constructor(ctx: Context, serviceKey: string, options?: TypertGatewayBindingOptions);
+}
+//#endregion
+//#region ../../packages/util/values/lib/types/index.d.ts
+/** Duplicate-install-safe JSON and immutable-value helpers. @module @deepseek-ai/dsh-util-values */
+/** A value that round-trips through JSON without loss. */
+type JsonValue = null | boolean | number | string | JsonValue[] | {
+  [key: string]: JsonValue;
+};
+//#endregion
+//#region ../../packages/core/agent/lib/types/types.d.ts
+/** Public live-agent handle; the runtime face augments its live capabilities. */
+interface Agent {
+  /** Session-backed Agent identity. */
+  readonly id: SessionId$1;
+}
+declare module '@deepseek-ai/dsh-workspace/types' {
+  interface SessionActivityKindMap {
+    /** The session's own Agent is inside a turn, including one waiting for an approval or an answer. */
+    turn: true;
+  }
+}
+declare module '@deepseek-ai/dsh-typert-protocol' {
+  interface TypertLookupMap {
+    agent: TypertLookup<Agent, SessionId$1>;
+  }
+  interface TypertContextMap {
+    /** Agent Context identity shared by Host and Client adapters. */
+    agent: TypertContext<SessionId$1>;
+  }
+}
+/** One of the two ordered pending-message lists owned by an agent. */
+type InboxTarget = 'next-turn' | 'next-step';
+/** Complete pending Inbox value reconstructed from durable splices. */
+interface InboxState {
+  readonly 'next-turn': readonly UserMessage$1[];
+  readonly 'next-step': readonly UserMessage$1[];
+}
+/**
+ * Wire-JSON pending Inbox value. Each message round-trips the session log
+ * losslessly, but the fold state's full `UserMessage` type cannot cross a
+ * typert Remote boundary (its source union carries an `unknown` replay
+ * field), so the typed projection table keeps this JSON-safe form.
+ */
+interface InboxWireState {
+  readonly 'next-turn': readonly JsonValue[];
+  readonly 'next-step': readonly JsonValue[];
+}
+declare module '@deepseek-ai/dsh-session-projection/types' {
+  interface SessionProjectionStateMap {
+    /** Pending agent input reconstructed from durable inbox splices. */
+    inbox: InboxState;
+  }
+  interface SessionProjectionMap {
+    /** Pending agent input reconstructed from durable inbox splices. */
+    inbox: InboxWireState;
+  }
+}
+/**
+ * Turn and step boundaries folded from one agent session log.
+ *
+ * Reader contract: the key is registered by `dsh-agent-loop` and absent
+ * otherwise. Without agent-loop no turn events exist, so readers treat an
+ * absent key as "no open turn / no boundaries" — capability absence, not a
+ * corrupt state. A reader whose behavior has no safe fallback for that
+ * absence (the step-open decision, for example) may fail loud instead.
+ */
+interface TurnBoundaryProjection {
+  /** Seq of the open turn's `turn/start`, or null between turns. */
+  readonly openTurnStartSeq: OptionalSessionSeq;
+  /** Seq of the latest `step/start` event, or null before the first step. */
+  readonly lastStepStartSeq: OptionalSessionSeq;
+  /** The latest step boundary (`step/start` or `step/end`) and its seq, or null before the first step boundary. */
+  readonly lastStepBoundary: {
+    readonly kind: 'start' | 'end';
+    readonly seq: SessionSeq$1;
+  } | null;
+  /** Turn number of the latest `turn/start`; 0 before the first turn. */
+  readonly lastTurn: number;
+}
+declare module '@deepseek-ai/dsh-session/types' {
+  interface SessionEventMap {
+    /**
+     * One normalized mutation of an agent's durable pending-message lists.
+     * The session-projection registry applies the committed event before
+     * `Session.append()` returns; Inbox live notifications follow that commit.
+     */
+    'agent/inbox/spliced': {
+      target: InboxTarget;
+      start: number;
+      removedCount?: number;
+      inserted: UserMessage$1[];
+      outcome?: 'canceled';
+    };
+  }
+} //# sourceMappingURL=types.d.ts.map
+//#endregion
+//#region ../../packages/core/scope/lib/types/index.d.ts
 /** An opaque, identity-compared scope key. */
 type ScopeKey = object;
 declare const ScopedBrand: unique symbol;
@@ -731,585 +1924,7 @@ type Scoped<T extends object> = object & {
   readonly [ScopedBrand]: T;
 };
 //#endregion
-//#region ../../deepseek-harness/packages/attachment/attachment/lib/types/brand.d.ts
-/** Opaque content-addressed identifier for one immutable attachment object. */
-type AttachmentId = Branded<'AttachmentId'>;
-/**
- * Brand a validated storage identifier.
- * @param value - backend-produced opaque identifier.
- * @returns the branded identifier.
- */
-declare function AttachmentId(value: string): AttachmentId;
-//#endregion
-//#region ../../deepseek-harness/packages/attachment/attachment/lib/types/types.d.ts
-/** Raster image formats accepted by the version-one attachment path. */
-type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
-/** Durable, serializable metadata for one immutable image object. */
-interface ImageAttachmentRef {
-  /** Opaque storage identifier; never a filesystem path or bearer URL. */
-  attachmentId: AttachmentId;
-  /** Media type verified from the stored bytes. */
-  mediaType: ImageMediaType;
-  /** Exact encoded byte length. */
-  bytes: number;
-  /** Intrinsic encoded width in pixels. */
-  width: number;
-  /** Intrinsic encoded height in pixels. */
-  height: number;
-  /** Optional display name stripped of local path information. */
-  name?: string;
-}
-/** Deployment-resolved limits used by upload admission and request buffering. */
-interface ImageAttachmentLimits {
-  maxImageBytes: number;
-  maxImagesPerMessage: number;
-  maxMessageImageBytes: number;
-  maxImagePixels: number;
-  mediaTypes: readonly ImageMediaType[];
-}
-/** Request to validate and durably commit one image. */
-interface SaveImageAttachment {
-  data: Uint8Array;
-  /** Caller-declared media type, checked against fully decoded bytes. */
-  mediaType: ImageMediaType;
-  /** Optional browser/provider display name; it is never interpreted as a path. */
-  name?: string;
-}
-/** Stored image bytes returned after reference and digest verification. */
-interface StoredImageAttachment {
-  ref: ImageAttachmentRef;
-  data: Uint8Array;
-}
-//#endregion
-//#region ../../deepseek-harness/packages/attachment/attachment/lib/types/index.d.ts
-declare module '@deepseek-ai/cordis' {
-  interface Context {
-    attachments: AttachmentStore;
-  }
-}
-/** Immutable binary attachment service. Implementations validate bytes before publishing a reference. */
-declare abstract class AttachmentStore extends Service {
-  constructor(ctx: Context);
-  /** Deployment-resolved image policy used by authoritative and fast-path validation. */
-  abstract readonly imageLimits: ImageAttachmentLimits;
-  /**
-   * Validate one image without persisting it.
-   * Batch callers validate every member before saving any member.
-   * @param input - encoded bytes, declared media type, and optional display name.
-   * @returns completion after the encoded raster has been fully decoded.
-   */
-  abstract validateImage(input: SaveImageAttachment): Promise<void>;
-  /**
-   * Validate one ordered image batch before committing any member.
-   * Validation failures start no writes; storage failures return no partial
-   * references, although already published content-addressed objects may stay
-   * unreachable until a future retention policy collects them.
-   * @param inputs - encoded images in their owning message order.
-   * @returns durable references in the exact input order.
-   */
-  saveImages(inputs: readonly SaveImageAttachment[]): Promise<readonly ImageAttachmentRef[]>;
-  /**
-   * Validate and durably commit one image before its owning session event is appended.
-   * @param input - encoded bytes, declared media type, and optional display name.
-   * @returns a durable content-addressed reference.
-   */
-  abstract saveImage(input: SaveImageAttachment): Promise<ImageAttachmentRef>;
-  /**
-   * Read one image and verify that bytes still match the recorded reference.
-   * @param ref - durable reference from the session log.
-   * @param signal - optional cancellation for backend read and verification work.
-   * @returns the verified bytes and canonical reference.
-   * @throws the signal reason when aborted, or a storage error when verification fails.
-   */
-  abstract readImage(ref: ImageAttachmentRef, signal?: AbortSignal): Promise<StoredImageAttachment>;
-}
-//#endregion
-//#region ../../deepseek-harness/packages/llm/llm/lib/types/brand.d.ts
-/** Stable identity carried by one message across inbox, log, and model-request boundaries. */
-type MessageId = Branded<'MessageId'>;
-/**
- * Brand a message identifier.
- * @param id - the opaque message identifier.
- * @returns the same string, branded; no validation is performed.
- */
-declare function MessageId(id: string): MessageId;
-/**
- * Correlates a model-issued tool call with its result. Provider-issued for
- * real adapters; synthesized by mocks/assembler fallbacks.
- */
-type CallId = Branded<'CallId'>;
-/**
- * Brand a string as a {@link CallId}.
- * @param id - the provider-issued (or synthesized) call id.
- * @returns the same string, branded; no validation is performed.
- */
-declare function CallId(id: string): CallId;
-/** Provider-issued request identifier retained for diagnostics across package boundaries. */
-type ProviderRequestId = Branded<'ProviderRequestId'>;
-/**
- * Brand a provider-issued request identifier.
- * @param id - the opaque provider-issued string.
- * @returns the same string, branded; no validation is performed.
- */
-declare function ProviderRequestId(id: string): ProviderRequestId;
-/** Adapter-owned identifier for one model's selectable reasoning effort. */
-type ReasoningEffortId = Branded<'ReasoningEffortId'>;
-/**
- * Brand an adapter-owned reasoning-effort identifier.
- * @param id - the opaque identifier exposed by one model capability.
- * @returns the same string, branded; no validation is performed.
- */
-declare function ReasoningEffortId(id: string): ReasoningEffortId;
-//#endregion
-//#region ../../deepseek-harness/packages/llm/llm/lib/types/message.d.ts
-/** Provider/model identity and adapter-private replay data for an assistant message. */
-interface AssistantProvenance {
-  /** Provider route that produced the message. */
-  provider: string;
-  /** Provider model id that produced the message. */
-  model: string;
-  /**
-   * Lossless-JSON adapter state needed to replay the provider response.
-   * `LlmRuntime` exposes it to a target adapter only when that adapter instance
-   * currently owns both this historical provider and the target provider.
-   */
-  replayState?: unknown;
-}
-/** Required source of an assistant message produced by a routed model. */
-interface ModelMessageSource extends AssistantProvenance {
-  kind: 'model';
-}
-/** Required source of a user-role message carrying one tool result. */
-interface ToolMessageSource {
-  kind: 'tool';
-  callId: CallId;
-}
-/** One named contribution to a `snapshot`-form context, in assembly order. */
-interface ContextSnapshotSection {
-  /** The contributing subsystem's name. */
-  readonly name: string;
-  /** That contribution's model-facing text, exactly as assembled. */
-  readonly text: string;
-}
-/**
- * Producer-declared {@link ContextForm} and the fields that form requires,
- * mixed into the source types that carry one.
- *
- * Discriminated by `form` so a producer cannot select a form without the
- * fields needed to present it: a `notice` must record its one-line
- * account, a `snapshot` its sections. Omitting `form` stays valid — an
- * undeclared context is the documented default.
- */
-type ContextFormed = {
-  readonly form?: never;
-} | {
-  readonly form: 'instructions';
-} | {
-  readonly form: 'catalog';
-} | {
-  readonly form: 'snapshot'; /** The named contributions this snapshot assembled, in order. */
-  readonly sections: readonly ContextSnapshotSection[];
-} | {
-  readonly form: 'notice'; /** One-line account of what happened, shown without expanding the row. */
-  readonly summary: string;
-} | {
-  readonly form: 'relay';
-} | {
-  readonly form: 'recall';
-};
-/**
- * Where a message (or injected content) came from.
- * Merge-extensible sum type — plugins add their own `kind`s.
- */
-interface MessageSourceMap {
-  user: {
-    kind: 'user';
-  };
-  plugin: {
-    kind: 'plugin';
-    plugin: string;
-  } & ContextFormed;
-  model: ModelMessageSource;
-  tool: ToolMessageSource;
-}
-/** Any known message source, derived from {@link MessageSourceMap}; switch on `kind` and fall through unknowns (merge-extensible). */
-type MessageSource = MessageSourceMap[keyof MessageSourceMap];
-/** One immutable message representation shared by delivery, durable history, and model requests. */
-interface Message {
-  /** Stable identity preserved across every representation boundary. */
-  readonly id: MessageId;
-  /** Provider-neutral conversation role. */
-  readonly role: 'system' | 'user' | 'assistant';
-  /** Exact model-facing blocks. */
-  readonly content: ContentBlock[];
-  /** Required source fields supplied by the producer. */
-  readonly source: MessageSource;
-}
-/** A user-role specialization of the one shared message representation. */
-interface UserMessage$1 extends Message {
-  readonly role: 'user';
-}
-//#endregion
-//#region ../../deepseek-harness/packages/llm/llm/lib/types/types.d.ts
-declare module '@deepseek-ai/cordis' {
-  interface Events {
-    /**
-     * The provider topology changed: an adapter registered or unregistered
-     * routes, or the configurable-provider directory gained or lost entries.
-     * This payload-free registry notification fires at each commit point
-     * (including registration disposal); consumers re-read `listProviders()`,
-     * `listModels()`, or `listConfigurableProviders()` for the new state.
-     * Observer failures are contained and cannot veto the registry mutation.
-     * @mode emit
-     */
-    'llm/adapters-updated'(): void;
-  }
-}
-/** Serializable provider or transport failure facts; policy decides whether they are retryable. */
-interface LlmFailure {
-  /** Human-readable provider or transport failure. */
-  readonly message: string;
-  /** Stable provider-neutral machine-routing code. */
-  readonly code: string;
-  /** HTTP status returned by the provider, when available. */
-  readonly status?: number;
-  /** Provider-requested delay in milliseconds, when valid and available. */
-  readonly providerRetryAfterMs?: number;
-  /** Opaque provider-issued request identifier for diagnostics. */
-  readonly requestId?: ProviderRequestId;
-}
-/** Plain text visible to the end user. */
-interface TextBlock {
-  type: 'text';
-  text: string;
-}
-/** Reasoning / thinking content, distinct from visible text. */
-interface ReasoningBlock {
-  type: 'reasoning';
-  text: string;
-}
-/**
- * A durable raster image reference, valid in user or assistant content. The
- * block is deliberately role-neutral; assistant-side rendering is forward
- * compatibility — the current production adapters declare text-only output,
- * so only user content carries images today.
- */
-interface ImageBlock {
-  type: 'image';
-  /** Immutable bytes and intrinsic display metadata owned by the attachment service. */
-  attachment: ImageAttachmentRef;
-}
-/** A tool invocation requested by the model. */
-interface ToolCallBlock {
-  type: 'tool-call';
-  /** Provider-issued call id; correlates with the matching tool result. */
-  id: CallId;
-  name: string;
-  /** Raw JSON string as produced by the model. */
-  arguments: string;
-}
-/** The result of a tool invocation, sent back to the model. */
-interface ToolResultBlock {
-  type: 'tool-result';
-  toolCallId: CallId;
-  content: ContentBlock[];
-  isError?: boolean;
-}
-/**
- * Merge-extensible content blocks keyed by `type`. New core blocks must land
- * with adapter, UI, and compaction support.
- */
-interface ContentBlockMap {
-  'text': TextBlock;
-  'reasoning': ReasoningBlock;
-  'image': ImageBlock;
-  'tool-call': ToolCallBlock;
-  'tool-result': ToolResultBlock;
-}
-/** The block `type` tag vocabulary; widens as plugins add entries to {@link ContentBlockMap}. */
-type ContentBlockType = keyof ContentBlockMap;
-/** Any known content block, derived from {@link ContentBlockMap}; switch on `type` and fall through unknowns (merge-extensible). */
-type ContentBlock = ContentBlockMap[ContentBlockType];
-/**
- * Why a model response stopped.
- * Merge-extensible so adapters can surface provider-specific reasons.
- */
-interface FinishReasonMap {
-  'stop': {
-    kind: 'stop';
-  };
-  'tool-calls': {
-    kind: 'tool-calls';
-  };
-  'max-tokens': {
-    kind: 'max-tokens';
-  };
-  'aborted': {
-    kind: 'aborted';
-    failure: LlmFailure;
-  };
-  'error': {
-    kind: 'error';
-    failure: LlmFailure;
-  };
-}
-/** Any known finish reason, derived from {@link FinishReasonMap}; switch on `kind` and fall through unknowns (merge-extensible). */
-type FinishReason = FinishReasonMap[keyof FinishReasonMap];
-/**
- * Token accounting for one model call (cache fields are optional).
- *
- * Counts are DISJOINT: `inputTokens` is uncached input only; cached input is
- * reported separately as `cacheReadTokens`/`cacheWriteTokens` (billed input =
- * sum of the three). Adapters whose providers fold cache hits into a total
- * prompt count (DeepSeek's `prompt_tokens`) subtract them out.
- */
-interface TokenUsage {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens?: number;
-  cacheWriteTokens?: number;
-  reasoningTokens?: number;
-}
-/** Display metadata for one registered provider route. */
-interface LlmProviderInfo {
-  /** Provider route key used by {@link GenerateOptions.provider}. */
-  id: string;
-  /** Human-readable provider name for selectors and diagnostics. */
-  name: string;
-}
-/** Merge-extensible provider model modality vocabulary. */
-interface ModelModalityMap {
-  text: 'text';
-  image: 'image';
-}
-/** Any declared provider model modality. */
-type ModelModality = ModelModalityMap[keyof ModelModalityMap];
-/**
- * One provider route an adapter plugin can activate through configuration,
- * whether or not the route is currently registered. Configuration surfaces
- * merge this directory with `listProviders()` to offer every configurable
- * provider alongside its live/dormant state.
- */
-interface LlmConfigurableProvider {
-  /** Provider route key this entry activates when configured. */
-  provider: string;
-  /** Human-readable provider name for configuration surfaces. */
-  displayName: string;
-  /** User-settings namespace whose section configures this provider. */
-  settingsNs: string;
-  /**
-   * Path from that namespace's section root to this provider's profile
-   * object; empty when the whole section is the profile.
-   */
-  settingsPath: readonly string[];
-  /**
-   * Whether the owning adapter knows this route only because configuration
-   * declared it — a gateway or self-hosted server it ships nothing about.
-   * Absent means the adapter draws no such distinction; false means it does
-   * and this route is one of its own. Only the adapter can answer: a stored
-   * profile is how a user-added route AND a corrected shipped one both look
-   * from outside.
-   */
-  declared?: boolean;
-}
-/**
- * One interrogation of a provider endpoint that configuration has not stored
- * yet. Configuration surfaces send the draft a user is still editing, so the
- * request carries the endpoint and credential directly instead of naming a
- * route: a provider being added has no route to name.
- */
-interface LlmModelDiscoveryRequest {
-  /**
-   * Route the draft is editing, when it edits an existing one. A route whose
-   * adapter already knows its models answers from that knowledge instead of
-   * asking the endpoint — the adapter's own registry is the better answer, and
-   * it costs no network call.
-   */
-  provider?: string;
-  /**
-   * Endpoint to interrogate. Optional because a route the adapter already
-   * describes needs none; a route it does not must supply one.
-   */
-  baseURL?: string;
-  /** Wire protocol the endpoint speaks, when the draft names one. */
-  api?: string;
-  /** Credential for this interrogation alone; the harness never stores it. */
-  apiKey?: string;
-  /** Caller cancellation; implementations must settle promptly after it aborts. */
-  signal?: AbortSignal;
-}
-/**
- * One model an endpoint reports about itself. Every field but the id is
- * optional because most provider listings disclose an id and nothing else;
- * a surface adopting one of these still owes the capacities its adapter needs.
- */
-interface LlmDiscoveredModel {
-  /** Model id the endpoint accepts. */
-  id: string;
-  /** Human-readable name when the endpoint supplies one. */
-  name?: string;
-  /** Maximum combined request and response context, when disclosed. */
-  contextWindow?: number;
-  /** Maximum output tokens, when disclosed. */
-  maxTokens?: number;
-}
-/** One adapter-discovered model; catalog membership is advisory, not request validation. */
-interface LlmModelInfo {
-  /** Provider route that owns this model entry. */
-  provider: string;
-  /** Model id passed to {@link GenerateOptions.model}. */
-  id: string;
-  /** Human-readable model name for selectors. */
-  name: string;
-  /** Optional user-facing distinction from otherwise similar models. */
-  description?: string;
-  /** Accepted request modalities; absent means unknown, while an explicit omission is negative capability. */
-  inputModalities?: readonly ModelModality[];
-}
-/** Provider-owned context capacity for one exact provider/model route. */
-interface LlmModelContext {
-  /** Maximum combined request and response context in tokens. */
-  contextWindow: number;
-}
-/** Display metadata for one adapter-owned reasoning effort. */
-interface LlmReasoningEffortInfo {
-  /** Opaque stable value accepted by {@link GenerateOptions.reasoningEffort}. */
-  id: ReasoningEffortId;
-  /** Human-readable effort name for selectors and diagnostics. */
-  name: string;
-  /** Optional user-facing distinction from otherwise similar efforts. */
-  description?: string;
-}
-/** Selectable reasoning efforts for one exact provider/model route. */
-interface LlmModelReasoningInfo {
-  /** Supported efforts in adapter-preferred display order. */
-  efforts: readonly LlmReasoningEffortInfo[];
-  /**
-   * Adapter-configured default materialized into requests when callers omit
-   * an effort. Absence preserves the provider's own default.
-   */
-  defaultEffort?: ReasoningEffortId;
-}
-/** Exact-route model metadata resolved by its owning adapter. */
-interface LlmResolvedModelInfo extends LlmModelInfo {
-  /** Provider-owned context capacity when known. */
-  context?: LlmModelContext;
-  /** Adapter-configured per-request output cap materialized when callers omit one. */
-  defaultMaxTokens?: number;
-  /** Adapter-owned selectable reasoning levels when exposed. */
-  reasoning?: LlmModelReasoningInfo;
-}
-/**
- * Adapter-private lossless-JSON state for replaying a successful response,
- * carried by a terminal `finish` chunk and stored on the assembled assistant
- * message's model source. Both halves stay opaque to the harness; only the
- * split is shared vocabulary, so assembly can keep stored metadata aligned
- * with stored content without reading either half.
- */
-interface ReplayEnvelope {
-  /** Response-level adapter-private metadata (ids, native stop reason). */
-  response: unknown;
-  /**
-   * Per-block adapter-private metadata, one entry per emitted block in
-   * first-seen stream order. When assembly drops a block it drops the entry at
-   * the same position; entries whose length does not match the emitted block
-   * count discard the whole envelope. An adapter whose metadata is independent
-   * of block structure omits this field and the envelope passes through
-   * assembly unchanged.
-   */
-  blocks?: readonly unknown[];
-}
-/**
- * Raw streaming protocol emitted by adapters.
- * Block indexes correlate interleaved deltas, and `block-end` carries the
- * assembled block. Adapters emit usage before the terminal finish and nothing
- * afterward; tool arguments remain raw JSON strings. An adapter implementation
- * may throw, but `LlmRuntime.stream()` normalizes that failure to a terminal
- * `error` or `aborted` finish before exposing it to consumers.
- */
-type StreamChunk = {
-  type: 'block-start';
-  index: number;
-  blockType: ContentBlockType;
-} | {
-  type: 'text-delta';
-  index: number;
-  text: string;
-} | {
-  type: 'reasoning-delta';
-  index: number;
-  text: string;
-} | {
-  type: 'tool-call-delta';
-  index: number;
-  id: CallId;
-  name?: string;
-  argumentsDelta: string;
-} | {
-  type: 'block-end';
-  index: number;
-  block: ContentBlock;
-} | {
-  type: 'usage';
-  usage: TokenUsage;
-} | {
-  type: 'finish';
-  reason: FinishReason; /** Replay metadata for a successful response; see {@link ReplayEnvelope}. */
-  replayState?: ReplayEnvelope;
-};
-/**
- * JSON-schema description of a tool, as sent to the model.
- *
- * Declared here (not in dsh-tools) because it is part of {@link GenerateOptions};
- * dsh-tools' ToolDefinition and dsh-system-prompt's PromptAssembly both import
- * it from this package.
- */
-interface ToolSchema {
-  name: string;
-  description: string;
-  /** JSON Schema object for the arguments. */
-  parameters: Record<string, unknown>;
-}
-/** A single model request, fully assembled. */
-interface GenerateOptions {
-  /** Registered provider route selecting the adapter instance. */
-  provider: string;
-  model: string;
-  /** Adapter-owned reasoning effort selected for this exact model. */
-  reasoningEffort?: ReasoningEffortId;
-  /**
-   * Ordered conversation messages, exactly as the provider sees them (after
-   * the `system` slot). A loop-built request assembles them as
-   * the derived history (dsh-agent-loop); a hand-built one-shot passes any list.
-   */
-  messages: Message[];
-  /** System prompt text (adapters map to the provider's system slot). */
-  system?: string;
-  /** Tool schemas (adapters map to the provider's `tools` field). */
-  tools?: ToolSchema[];
-  temperature?: number;
-  maxTokens?: number;
-  /**
-   * Stop sequences: generation halts as soon as the model produces any one of
-   * these strings (adapters map to the provider's stop field, e.g. OpenAI
-   * `stop`). The stop string itself is not included in the output.
-   */
-  stop?: string[];
-  signal?: AbortSignal;
-  /**
-   * Session identity stamped by the loop for request routing. Replay uses it
-   * to separate cursors; adapters may map it to model-hidden transport metadata.
-   */
-  sessionId?: Branded<'SessionId'>;
-  /**
-   * Provider-neutral classification for an auxiliary model call. Adapters may
-   * map the purpose to model-hidden transport metadata or purpose-specific
-   * generation policy. Ordinary conversation requests leave it unset.
-   */
-  purpose?: 'compaction' | 'session-title';
-}
-//#endregion
-//#region ../../deepseek-harness/vendor/cosmokit/lib/types/types.d.ts
+//#region ../../vendor/cosmokit/lib/types/types.d.ts
 declare function isArrayBufferLike(value: any): value is ArrayBufferLike;
 declare function isArrayBufferSource(value: any): value is Binary.Source;
 /** Binary source detection and base64/hex conversion helpers. */
@@ -1324,11 +1939,21 @@ declare namespace Binary {
   function fromHex(source: string): ArrayBuffer;
 }
 //#endregion
-//#region ../../deepseek-harness/vendor/cosmokit/lib/types/misc.d.ts
+//#region ../../vendor/cosmokit/lib/types/misc.d.ts
 /** String/symbol keyed dictionary type. */
 type Dict<T = any, K extends string | symbol = string> = { [key in K]: T };
 //#endregion
-//#region ../../deepseek-harness/node_modules/.pnpm/@standard-schema+spec@1.1.0/node_modules/@standard-schema/spec/dist/index.d.ts
+//#region ../../vendor/cosmokit/lib/types/volatile.d.ts
+/** Shared config references used by schema validators and plugin runtimes. */
+/** Recursively readonly data returned by a volatile config reference. */
+type VolatileSnapshot<T> = T extends object ? { readonly [K in keyof T]: VolatileSnapshot<T[K]> } : T;
+/** A stable reference; keep the reference, or capture its value for one operation only. */
+interface Volatile<T> {
+  /** @returns the current immutable snapshot, including undefined for an absent value. */
+  get(): VolatileSnapshot<T>;
+}
+//#endregion
+//#region ../../node_modules/.pnpm/@standard-schema+spec@1.1.0/node_modules/@standard-schema/spec/dist/index.d.ts
 /** The Standard Typed interface. This is a base type extended by other specs. */
 interface StandardTypedV1<Input = unknown, Output = Input> {
   /** The Standard properties. */
@@ -1406,14 +2031,14 @@ declare namespace StandardSchemaV1 {
 }
 /** The Standard JSON Schema interface. */
 //#endregion
-//#region ../../deepseek-harness/vendor/schemastery/lib/types/index.d.ts
+//#region ../../vendor/schemastery/lib/types/index.d.ts
 declare const kSchema: unique symbol;
 declare global {
   namespace Schemastery {
     /** Convert primitive constructors, constants, and existing schemas into a schema type. */
-    type From<X> = X extends string | number | boolean ? Schema<X> : X extends Schema ? X : X extends typeof String ? Schema<string> : X extends typeof Number ? Schema<number> : X extends typeof Boolean ? Schema<boolean> : X extends typeof Function ? Schema<Function, (...args: any[]) => any> : X extends Constructor<infer S> ? Schema<S> : never;
-    type TypeS1<X> = X extends Schema<infer S, unknown> ? S : never;
-    type Inverse<X> = X extends Schema<any, infer Y> ? (arg: Y) => void : never;
+    type From<X> = X extends string | number | boolean ? Schema<X> : X extends Schema<any, any, SchemaMode> ? X : X extends typeof String ? Schema<string> : X extends typeof Number ? Schema<number> : X extends typeof Boolean ? Schema<boolean> : X extends typeof Function ? Schema<Function, (...args: any[]) => any> : X extends Constructor<infer S> ? Schema<S> : never;
+    type TypeS1<X> = X extends Schema<infer S, infer _T, infer _M> ? S : never;
+    type Inverse<X> = X extends Schema<infer _S, infer T, infer M> ? (arg: SchemaOutput<T, M>) => void : never;
     /** Input type accepted by a schema-like value. */
     type TypeS<X> = TypeS1<From<X>>;
     /** Output type returned by a schema-like value after validation. */
@@ -1421,7 +2046,7 @@ declare global {
     /** Resolver callback used by custom schema types registered with `Schema.extend()`. */
     type Resolve = (data: any, schema: Schema, options: Options, strict?: boolean) => [any, any?];
     /** Input type accepted by one schema in an intersection. */
-    type IntersectS<X> = From<X> extends Schema<infer S, unknown> ? S : never;
+    type IntersectS<X> = From<X> extends Schema<infer S, infer _T, infer _M> ? S : never;
     /** Output type returned by one schema in an intersection. */
     type IntersectT<X> = Inverse<From<X>> extends ((arg: infer T) => void) ? T : never;
     type TupleS<X extends readonly any[]> = X extends readonly [infer L, ...infer R] ? [TypeS<L>?, ...TupleS<R>] : any[];
@@ -1476,8 +2101,8 @@ declare global {
       dict<X, Y extends Schema<any, string> = Schema<string>>(inner: X, sKey?: Y): Schema<Dict<TypeS<X>, TypeS<Y>>, Dict<TypeT<X>, TypeT<Y>>>;
       /** Accept tuple arrays where each index matches the corresponding schema. */
       tuple<const X extends readonly any[]>(list: X): Schema<TupleS<X>, TupleT<X>>;
-      /** Accept plain objects whose declared properties match the schema dictionary. */
-      object<X extends Dict>(dict: X): Schema<ObjectS<X>, ObjectT<X>>;
+      /** Accept plain objects; infer fields from the dictionary, not the enclosing schema's output type. */
+      object<X extends Dict>(dict: X): Schema<ObjectS<NoInfer<X>>, ObjectT<NoInfer<X>>>;
       /** Accept values matching at least one schema in `list`. */
       union<const X>(list: readonly X[]): Schema<TypeS<X>, TypeT<X>>;
       /** Accept values matching every schema in `list`, merging object outputs. */
@@ -1485,7 +2110,7 @@ declare global {
       /** Validate with `inner`, then convert the result with `callback`. */
       transform<X, T>(inner: X, callback: (value: TypeS<X>, options: Schemastery.Options) => T, preserve?: boolean): Schema<TypeS<X>, T>;
       /** Defer construction of a recursive schema until validation or serialization. */
-      lazy<X extends Schema>(callback: () => X): X;
+      lazy<X extends Schema<any, any, SchemaMode>>(callback: () => X): X;
       ValidationError: typeof ValidationError;
     }
     /** Runtime validation options shared by all schema calls. */
@@ -1501,6 +2126,8 @@ declare global {
     interface Meta<T = any> {
       default?: T extends {} ? Partial<T> : T;
       required?: boolean;
+      /** Parse this node as a stable config reference; its type and UI metadata remain unchanged. */
+      volatile?: boolean;
       disabled?: boolean;
       collapse?: boolean;
       badges?: {
@@ -1524,9 +2151,9 @@ declare global {
     }
   }
   /** Callable schema instance that validates input and returns normalized output. */
-  interface Schemastery<S = any, T = S> {
-    (data?: S | null, options?: Schemastery.Options): T;
-    new (data?: S | null, options?: Schemastery.Options): T;
+  interface Schemastery<S = any, T = S, Mode extends SchemaMode = 'plain'> {
+    (data?: S | null, options?: Schemastery.Options): SchemaOutput<T, Mode>;
+    new (data?: S | null, options?: Schemastery.Options): SchemaOutput<T, Mode>;
     [kSchema]: true;
     uid: number;
     meta: Schemastery.Meta<T>;
@@ -1546,49 +2173,54 @@ declare global {
     /** Format this schema as a compact TypeScript-like type string. */
     toString(inline?: boolean): string;
     /** Serialize this schema, preserving shared and recursive references. */
-    toJSON(): Schema<S, T>;
+    toJSON(): Schema<S, T, Mode>;
     /** Mark nullable input as invalid unless a default supplies a fallback. */
-    required(value?: boolean): Schema<S, T>;
+    required<R extends boolean = true>(value?: R): Schema<S, T, SetRequired<Mode, R>>;
+    /**
+     * Parse this config field as a stable reference containing immutable data.
+     * @returns a schema whose output supports get(), including when the field is absent.
+     */
+    volatile(): Schema<NoInfer<S>, NoInfer<T>, Mode extends 'defined' | 'volatile-defined' ? 'volatile-defined' : 'volatile'>;
     /** Hide this schema node from UI renderers. */
-    hidden(value?: boolean): Schema<S, T>;
+    hidden(value?: boolean): Schema<S, T, Mode>;
     /** Return the default value instead of throwing when validation fails. */
-    loose(value?: boolean): Schema<S, T>;
+    loose(value?: boolean): Schema<S, T, Mode>;
     /** Attach a renderer role and optional role-specific metadata. */
-    role(text: string, extra?: any): Schema<S, T>;
+    role(text: string, extra?: any): Schema<S, T, Mode>;
     /** Attach an external documentation link. */
-    link(link: string): Schema<S, T>;
+    link(link: string): Schema<S, T, Mode>;
     /** Set the fallback value used for nullable input. */
-    default(value: T): Schema<S, T>;
+    default(value: T | NoInfer<Partial<S>>): Schema<S, T, SetRequired<Mode, true>>;
     /** Attach an auxiliary comment for documentation or form UIs. */
-    comment(text: string): Schema<S, T>;
+    comment(text: string): Schema<S, T, Mode>;
     /** Attach a localized or plain description for documentation or form UIs. */
-    description(text: string): Schema<S, T>;
+    description(text: string): Schema<S, T, Mode>;
     /** Mark this schema node as disabled for form UIs. */
-    disabled(value?: boolean): Schema<S, T>;
+    disabled(value?: boolean): Schema<S, T, Mode>;
     /** Request collapsed rendering for nested form UIs. */
-    collapse(value?: boolean): Schema<S, T>;
+    collapse(value?: boolean): Schema<S, T, Mode>;
     /** Add a deprecated badge to this schema node. */
-    deprecated(): Schema<S, T>;
+    deprecated(): Schema<S, T, Mode>;
     /** Add an experimental badge to this schema node. */
-    experimental(): Schema<S, T>;
+    experimental(): Schema<S, T, Mode>;
     /** Require strings to match a regular expression. */
-    pattern(regexp: RegExp): Schema<S, T>;
+    pattern(regexp: RegExp): Schema<S, T, Mode>;
     /** Set an inclusive maximum for numbers or collection lengths. */
-    max(value: number): Schema<S, T>;
+    max(value: number): Schema<S, T, Mode>;
     /** Set an inclusive minimum for numbers or collection lengths. */
-    min(value: number): Schema<S, T>;
+    min(value: number): Schema<S, T, Mode>;
     /** Set the numeric increment constraint. */
-    step(value: number): Schema<S, T>;
+    step(value: number): Schema<S, T, Mode>;
     /** Add or replace an object property schema. */
-    set(key: string, value: Schema): Schema<S, T>;
+    set(key: string, value: Schema): Schema<S, T, Mode>;
     /** Append a tuple, union, or intersection member schema. */
-    push(value: Schema): Schema<S, T>;
+    push(value: Schema): Schema<S, T, Mode>;
     /** Remove values equal to schema defaults from normalized output. */
     simplify(value?: any): any;
     /** Return a schema clone with descriptions merged from locale messages. */
-    i18n(messages: Dict): Schema<S, T>;
+    i18n(messages: Dict): Schema<S, T, Mode>;
     /** Attach arbitrary metadata consumed by form renderers and downstream tools. */
-    extra<K extends keyof Schemastery.Meta>(key: K, value: Schemastery.Meta[K]): Schema<S, T>;
+    extra<K extends keyof Schemastery.Meta>(key: K, value: Schemastery.Meta[K]): Schema<S, T, Mode>;
   }
 }
 declare class ValidationError extends TypeError {
@@ -1597,10 +2229,13 @@ declare class ValidationError extends TypeError {
   constructor(message: string, options: Schemastery.Options);
   static is(error: any): error is ValidationError;
 }
-type Schema<S = any, T = S> = Schemastery<S, T>;
+type SchemaMode = 'plain' | 'defined' | 'volatile' | 'volatile-defined';
+type SchemaOutput<T, M extends SchemaMode> = M extends 'volatile' ? Volatile<T | undefined> : M extends 'volatile-defined' ? Volatile<T> : T;
+type SetRequired<M extends SchemaMode, R extends boolean> = M extends 'volatile' | 'volatile-defined' ? R extends true ? 'volatile-defined' : 'volatile' : R extends true ? 'defined' : 'plain';
+type Schema<S = any, T = S, Mode extends SchemaMode = 'plain'> = Schemastery<S, T, Mode>;
 declare const Schema: Schemastery.Static;
 //#endregion
-//#region ../../deepseek-harness/packages/llm/llm/lib/types/retry-policy.d.ts
+//#region ../../packages/llm/llm/lib/types/retry-policy.d.ts
 /** Fully resolved backoff shared by both retry modes. */
 interface ResolvedRetryBackoff {
   readonly initialDelayMs: number;
@@ -1620,7 +2255,7 @@ interface ResolvedAlwaysRetryPolicy extends ResolvedRetryBackoff {
 /** Immutable provider policy captured when its adapter route is registered. */
 type ResolvedRetryPolicy = ResolvedNormalRetryPolicy | ResolvedAlwaysRetryPolicy;
 //#endregion
-//#region ../../deepseek-harness/packages/llm/llm/lib/types/call-config.d.ts
+//#region ../../packages/llm/llm/lib/types/call-config.d.ts
 /**
  * Provider, model, reasoning effort, and sampling scalars of one conversation's
  * requests. Every field maps 1:1 onto the same-named `GenerateOptions` field;
@@ -1644,7 +2279,7 @@ interface LlmCallConfigAdapterDefaults {
   maxTokens?: true;
 }
 //#endregion
-//#region ../../deepseek-harness/packages/llm/llm/lib/types/index.d.ts
+//#region ../../packages/llm/llm/lib/types/index.d.ts
 declare module '@deepseek-ai/cordis' {
   interface Context {
     llm: LlmRuntime;
@@ -1658,8 +2293,8 @@ declare module '@deepseek-ai/cordis' {
      *   process-local {@link markAgentLoopRequest} identity and arrives deep-frozen
      *   (mutation throws): its content is a pure function of the session log (the
      *   reconstructability Agent Note), so listeners read it, never rewrite it.
-     *   Hand-built calls do not carry that marker; their messages already obey
-     *   the immutable creation contract.
+     *   Hand-built calls do not carry that marker; callers own their request
+     *   inputs and must keep them unchanged until the stream settles.
      * @mode waterfall
      */
     'llm/stream'(this: LlmRuntime, options: GenerateOptions, next: () => AsyncIterable<StreamChunk>): AsyncIterable<StreamChunk>;
@@ -1674,6 +2309,12 @@ interface PreparedLlmCall {
   readonly retryPolicy: ResolvedRetryPolicy;
   /** Detached context metadata resolved with the registration-bound call. */
   readonly context?: LlmModelContext;
+  /** Exact model modalities captured with the adapter dispatch generation. */
+  readonly inputModalities?: readonly ModelModality[];
+  /** Exact model system prompt update mode captured with the adapter dispatch generation. */
+  readonly systemPromptUpdate?: SystemPromptUpdate;
+  /** Exact model tool update mode captured with the adapter dispatch generation. */
+  readonly toolUpdate?: ToolUpdate;
   /** Config fields materialized by the captured adapter rather than proposed by the caller. */
   readonly adapterDefaults: LlmCallConfigAdapterDefaults;
   /**
@@ -1683,6 +2324,13 @@ interface PreparedLlmCall {
    * @param options - fully assembled request carrying the prepared config.
    * @returns the chunk stream, including the `llm/stream` waterfall.
    */
+  stream(options: GenerateOptions): AsyncIterable<StreamChunk>;
+}
+/** One adapter-owned model-resolution generation bound to its eventual stream call. */
+interface PreparedAdapterCall {
+  /** Exact model metadata from the same adapter generation as {@link stream}. */
+  readonly model: LlmResolvedModelInfo;
+  /** Dispatch through that generation without re-reading dynamic connection facts. */
   stream(options: GenerateOptions): AsyncIterable<StreamChunk>;
 }
 /**
@@ -1705,9 +2353,20 @@ declare abstract class LlmAdapter {
    */
   providerRetryPolicy(_provider: string): ResolvedRetryPolicy | undefined;
   /**
+   * Resolve provider-side request-image pricing for one exact model route.
+   * The default declares none, so consumers fall back to their own neutral
+   * estimate. Implementations must answer synchronously without I/O; the
+   * token meter resolves this per measurement.
+   * @param _provider - a route passed to `registerAdapter()` for this instance.
+   * @param _model - exact model id passed to {@link GenerateOptions.model}.
+   * @returns route-owned image pricing, or `undefined` when the route declares none.
+   */
+  imageRequestPricing(_provider: string, _model: string): LlmImageRequestPricing | undefined;
+  /**
    * List models this adapter can currently advertise for one owned provider.
-   * The result is advisory: an adapter may accept unlisted model ids, and
-   * consumers must not turn absence into request rejection.
+   * Core routing accepts unlisted model ids; catalog-driven entry points such
+   * as the GUI may require membership. Adapters used there must advertise
+   * their available models; the base empty catalog offers no GUI selection.
    * @param _provider - one provider route owned by this adapter.
    * @returns discoverable models in adapter-preferred order.
    */
@@ -1722,6 +2381,16 @@ declare abstract class LlmAdapter {
    * @returns provider/model identity plus any context, call-default, and reasoning metadata.
    */
   resolveModel(provider: string, model: string, _signal?: AbortSignal): Promise<LlmResolvedModelInfo>;
+  /**
+   * Bind exact model metadata and the eventual request dispatch to one adapter generation.
+   * Dynamic adapters override this so settings changes between preparation and
+   * dispatch cannot combine one generation's capabilities with another's endpoint.
+   * @param provider - registered provider route.
+   * @param model - exact model id.
+   * @param signal - cancellation for model resolution.
+   * @returns model metadata and a one-generation stream entry point.
+   */
+  prepareCall(provider: string, model: string, signal?: AbortSignal): Promise<PreparedAdapterCall>;
   /**
    * Stream one model call as raw chunks. The only required method.
    * @param options - the fully-assembled request; implementations must honor `options.signal`.
@@ -1776,7 +2445,7 @@ interface DirectoryRegistrationHandle {
  * The abstract `llm` service: an adapter registry plus a streaming model-call
  * API, interceptable via the `llm/stream` waterfall.
  */
-declare class LlmRuntime extends Service {
+declare class LlmRuntime extends TypertRemoteService {
   private adapters;
   private directory;
   private discoveries;
@@ -1834,10 +2503,10 @@ declare class LlmRuntime extends Service {
    * directory, and because a provider being *added* has no route to name yet.
    * Disposed with the fiber.
    * @param settingsNs - the namespace whose profiles this discovery serves.
-   * @param discover - interrogates one endpoint; must honor `request.signal`.
+   * @param discover - interrogates one endpoint and must honor the supplied signal.
    * @returns the disposer that withdraws the offer.
    */
-  registerModelDiscovery(settingsNs: string, discover: (request: LlmModelDiscoveryRequest) => Promise<readonly LlmDiscoveredModel[]>): () => void;
+  registerModelDiscovery(settingsNs: string, discover: (request: LlmModelDiscoveryRequest, signal?: AbortSignal) => Promise<readonly LlmDiscoveredModel[]>): () => void;
   /**
    * Interrogate one provider endpoint for the models it advertises. The
    * request describes a draft, not a stored route, so nothing here reads or
@@ -1845,20 +2514,48 @@ declare class LlmRuntime extends Service {
    * candidate metadata a surface may offer for adoption.
    * @param settingsNs - namespace whose registered discovery serves this draft.
    * @param request - the endpoint, protocol, and one-shot credential to use.
+   * @param signal - caller cancellation.
    * @returns the advertised models, deduplicated in endpoint order.
    */
-  discoverModels(settingsNs: string, request: LlmModelDiscoveryRequest): Promise<LlmDiscoveredModel[]>;
+  discoverModels(settingsNs: string, request: LlmModelDiscoveryRequest, signal?: AbortSignal): Promise<LlmDiscoveredModel[]>;
+  /**
+   * Remote adapter for one draft provider interrogation.
+   * @param settingsNs - namespace whose registered discovery serves this draft.
+   * @param request - endpoint, protocol, and one-shot credential to use.
+   * @param signal - caller cancellation supplied by the Remote carrier.
+   * @returns advertised models in endpoint order.
+   * @throws RemoteError with `llm/model-discovery-rejected` when discovery refuses or fails.
+   */
+  remoteDiscoverModels(settingsNs: string, request: LlmModelDiscoveryRequest, signal: AbortSignal): Promise<LlmDiscoveredModel[]>;
   /**
    * Resolve the retry policy captured when one provider route was registered.
    * @param provider - registered provider route to inspect.
    * @returns the provider-owned policy, with normal defaults already resolved.
    */
   providerRetryPolicy(provider: string): ResolvedRetryPolicy;
+  /**
+   * Resolve provider-side request-image pricing for one exact route, or
+   * `undefined` when the provider is unregistered or declares none. Unknown
+   * providers degrade to `undefined` rather than throwing because callers
+   * price durable history whose route may no longer be mounted.
+   * @param provider - provider route named by a request header.
+   * @param model - exact model id named by the same header.
+   * @returns the owning adapter's image pricing for the route, when declared.
+   */
+  imageRequestPricing(provider: string, model: string): LlmImageRequestPricing | undefined;
+  /**
+   * Resolve the exact text one durable file occurrence contributes to every
+   * provider request in the current execution environment.
+   * @param ref - durable verbatim file reference from model history.
+   * @returns the same deterministic handle text used at adapter dispatch.
+   */
+  fileRequestText(ref: FileAttachmentRef): string;
   /** Detach typed adapter-owned modality metadata. */
   private detachedModalities;
   /**
    * Discover models advertised by one registered provider. Catalog membership
-   * is advisory and never changes routing or request validation.
+   * does not constrain core routing. Catalog-driven entry points may restrict
+   * selection and submission to the advertised models.
    * @param provider - registered provider route to inspect.
    * @returns detached model metadata in adapter-preferred order.
    */
@@ -1874,6 +2571,8 @@ declare class LlmRuntime extends Service {
    */
   resolveModelInfo(provider: string, model: string, signal?: AbortSignal): Promise<LlmResolvedModelInfo>;
   private resolveModelInfoFor;
+  /** Validate and detach one adapter-returned exact model result. */
+  private normalizeModelInfo;
   /**
    * Validate a conversation call config against its exact model capability and
    * materialize adapter-configured defaults. Unsupported explicit efforts
@@ -1886,6 +2585,8 @@ declare class LlmRuntime extends Service {
    */
   resolveCallConfig(config: LlmCallConfig, signal?: AbortSignal): Promise<LlmCallConfig>;
   private resolveCallFor;
+  /** Validate request controls against one already-bound exact model result. */
+  private resolveCallWithInfo;
   /**
    * Resolve one call under its current adapter registration. The returned
    * one-shot handle keeps that registration across header logging and dispatch,
@@ -1898,6 +2599,11 @@ declare class LlmRuntime extends Service {
   private registration;
   /** Remove replay state whose historical route is owned by another adapter. */
   private forAdapter;
+  /**
+   * Resolve the current execution-world read path of one durable file
+   * reference through the mounted attachment and filesystem providers.
+   */
+  private fileReadPath;
   /**
    * Final adapter boundary. Adapter selection, dispatch, iterator construction,
    * and iteration failures become one terminal failure chunk. Middleware and
@@ -1919,112 +2625,7 @@ declare class LlmRuntime extends Service {
   private streamWithRegistration;
 }
 //#endregion
-//#region ../../deepseek-harness/packages/core/agent/lib/types/types.d.ts
-/** One of the two ordered pending-message lists owned by an agent. */
-type InboxTarget = 'next-turn' | 'next-step';
-declare module '@deepseek-ai/dsh-session/types' {
-  interface SessionEventMap {
-    /**
-     * One normalized mutation of an agent's durable pending-message lists.
-     * Live dispatch precedes projection mutation, so synchronous observers may
-     * read the pre-splice inbox to recover the removed messages.
-     */
-    'agent/inbox/spliced': {
-      target: InboxTarget;
-      start: number;
-      removedCount?: number;
-      inserted: UserMessage$1[];
-      outcome?: 'canceled';
-    };
-  }
-} //# sourceMappingURL=types.d.ts.map
-//#endregion
-//#region ../../deepseek-harness/packages/core/agent/lib/types/inbox.d.ts
-/** Live notifications committed by inbox mutations. */
-interface InboxNotifications {
-  /** Publish one inserted message. */
-  inserted(message: UserMessage): void;
-  /** Publish one discarded message. */
-  discarded(message: UserMessage): void;
-  /** Publish one claimed message inside its owning turn. */
-  claimed(message: UserMessage, turn: number): void;
-}
-/** A replay-once projection that incrementally consumes later inbox splices. */
-declare class Inbox {
-  private readonly session;
-  private readonly notifications;
-  private readonly state;
-  constructor(session: Session, notifications: InboxNotifications);
-  /** Prompts awaiting individual turns. */
-  get nextTurn(): readonly UserMessage[];
-  /** Input awaiting the next step boundary. */
-  get nextStep(): readonly UserMessage[];
-  /** Whether either pending-message list contains work. */
-  get hasPending(): boolean;
-  /** Durably cancel all pending input, clearing next-step before next-turn. */
-  clear(): void;
-  /**
-   * Remove and return the complete batch proposed for one step, publishing
-   * each claimed message. The durable splices are pure deletions.
-   * @param target - whether this boundary also consumes one queued turn.
-   * @param turn - turn that will own the claimed batch.
-   * @returns next-step input followed by the queued turn, when requested.
-   * @internal - The agent loop's step-boundary operation, not a plugin extension point.
-   */
-  claim(target: InboxTarget, turn: number): UserMessage[];
-  /**
-   * Append one message to a pending list and durably record the insertion.
-   * @param target - pending list to extend.
-   * @param message - message to append.
-   * @throws if the message identity is already pending.
-   */
-  append(target: InboxTarget, message: UserMessage): void;
-  /**
-   * Prepend one message to a pending list and durably record the insertion.
-   * @param target - pending list to extend.
-   * @param message - message to prepend.
-   * @throws if the message identity is already pending.
-   */
-  prepend(target: InboxTarget, message: UserMessage): void;
-  /**
-   * Replace one pending message in place, possibly changing its identity. A
-   * successful replacement publishes the old message as discarded and the new
-   * message as inserted.
-   * @param messageId - identity of the pending message to replace.
-   * @param newMessage - replacement message.
-   * @returns whether the message was still pending.
-   * @throws if the replacement duplicates another pending message identity.
-   */
-  replace(messageId: MessageId, newMessage: UserMessage): boolean;
-  /**
-   * Remove one pending message and durably record its cancellation.
-   * @param messageId - identity of the pending message to remove.
-   * @returns whether the message was still pending.
-   */
-  remove(messageId: MessageId): boolean;
-  /**
-   * Apply standard splice semantics and durably record the normalized result.
-   * The durable event commits before the live projection mutates, so synchronous
-   * `session/event` observers see the pre-splice lists and can reconstruct the
-   * removed messages from the normalized coordinates.
-   * @param target - pending list to mutate.
-   * @param start - splice position.
-   * @param deleteCount - maximum number of messages to remove.
-   * @param inserted - messages to insert at the resolved position.
-   * @returns messages removed by the splice.
-   */
-  splice(target: InboxTarget, start: number, deleteCount: number, inserted: UserMessage[]): UserMessage[];
-  /** Locate one pending identity across both owned lists. */
-  private locate;
-  /** Commit one normalized mutation and publish its live notifications. */
-  private mutate;
-  /** Apply one normalized durable splice to the projection. */
-  private apply;
-  /** Validate one normalized splice against the current projection. */
-  private validate;
-}
-//#endregion
-//#region ../../deepseek-harness/packages/core/agent/lib/types/runtime-types.d.ts
+//#region ../../packages/core/agent/lib/types/runtime-types.d.ts
 declare module '@deepseek-ai/dsh-system-prompt' {
   interface AssembleContext {
     /** Agent for this assembly; absent on diagnostics. When present, `scope` must identify the same agent. */
@@ -2037,6 +2638,8 @@ interface AgentOptions {
   provider?: string;
   /** Model id interpreted by the selected provider adapter. */
   model?: string;
+  /** Adapter-owned reasoning effort for the selected provider/model route. */
+  reasoningEffort?: ReasoningEffortId;
   /** Maximum output tokens for each conversation-model request. */
   maxTokens?: number;
 }
@@ -2048,6 +2651,49 @@ interface CancelOptions {
    * later turn and no canceled inbox splice is logged.
    */
   keepInbox?: boolean | undefined;
+}
+/** Agent-owned access to pending work; concrete storage belongs to the driver. */
+interface Inbox {
+  /** Prompts awaiting individual turns. */
+  readonly nextTurn: readonly UserMessage[];
+  /** Input awaiting the next step boundary. */
+  readonly nextStep: readonly UserMessage[];
+  /** Durably cancel all pending input, clearing next-step before next-turn. */
+  clear(): void;
+  /**
+   * Append one message to a pending list.
+   * @param target - pending list to extend.
+   * @param message - message to append.
+   */
+  append(target: InboxTarget, message: UserMessage): void;
+  /**
+   * Prepend one message to a pending list.
+   * @param target - pending list to extend.
+   * @param message - message to prepend.
+   */
+  prepend(target: InboxTarget, message: UserMessage): void;
+  /**
+   * Replace one pending message in place.
+   * @param messageId - identity of the pending message to replace.
+   * @param newMessage - replacement message.
+   * @returns whether the message was still pending.
+   */
+  replace(messageId: MessageId, newMessage: UserMessage): boolean;
+  /**
+   * Remove one pending message.
+   * @param messageId - identity of the pending message to remove.
+   * @returns whether the message was still pending.
+   */
+  remove(messageId: MessageId): boolean;
+  /**
+   * Apply standard splice semantics and durably record the normalized result.
+   * @param target - pending list to mutate.
+   * @param start - splice position.
+   * @param deleteCount - maximum number of messages to remove.
+   * @param inserted - messages to insert at the resolved position.
+   * @returns messages removed by the splice.
+   */
+  splice(target: InboxTarget, start: number, deleteCount: number, inserted: UserMessage[]): UserMessage[];
 }
 /**
  * An agent's lifecycle state, emitted on every transition as `agent/status`:
@@ -2062,7 +2708,8 @@ type PreStepDecision = {
   kind: 'reject';
 } | {
   kind: 'enter';
-  messages: UserMessage[];
+  messages: UserMessage[]; /** Start a distinct model-message series before this step's admitted messages. */
+  startsRequestSeries?: true;
 };
 /** Action returned by a listener that owns model-request recovery. */
 type RequestErrorAction = {
@@ -2070,96 +2717,127 @@ type RequestErrorAction = {
 } | undefined;
 /** Why a session lifecycle began; seeded creates are `startup`, while persisted loads are `resume`. */
 type SessionStartSource = 'startup' | 'resume' | 'clear' | 'compact';
-/** Public live-agent handle. */
-interface Agent {
-  /** The single identity shared with {@link session}. */
-  readonly id: SessionId;
-  /** The provider route and model this agent's requests use. */
-  readonly options: AgentOptions;
-  /** The live session this agent drives; its log is the durable source of truth. */
-  readonly session: Session;
-  /** The agent-owned projection of durable pending work. */
-  readonly inbox: Inbox;
-  /** The current lifecycle state, mirrored on every `agent/status` transition. */
-  readonly status: AgentStatus;
-  /** Agent-scoped context; its contributions are agent-local, unwind on disposal, and reject registration afterward. */
-  readonly ctx: Context;
-  /**
-   * Clear queued and steering work — unless `keepInbox` — and abort the active
-   * turn or between-turn task. The first cause wins for that activity. With no
-   * active activity, cancellation is a no-op and does not arm later work.
-   * @param cause - the stable caller intent carried by the active operation signal.
-   * @param options - cancellation options; `keepInbox` preserves pending work.
-   */
-  cancel(cause: AgentCancelCause, options?: CancelOptions): void;
-  /**
-   * Resolve after the current whole-agent activity reaches quiescence. This
-   * follows replacement work started before the observed driver retires,
-   * but does not identify the settlement of any particular message.
-   * @returns fulfillment after no active driver or maintenance task remains.
-   */
-  whenIdle(): Promise<void>;
-  /**
-   * Run one non-turn maintenance task from the true idle phase. The task starts
-   * synchronously after claiming that phase; later waking input remains in the
-   * inbox until the task settles, while public status stays `idle`.
-   * `whenIdle()` follows both the task and any waking work released behind it.
-   * @param task - operation whose fulfillment or rejection is preserved, with a signal aborted by {@link cancel}.
-   * @throws synchronously when turn-driving or another maintenance task already owns the agent.
-   * @returns the task promise.
-   */
-  runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T>;
-  /**
-   * Route identified input to an inbox boundary and optionally wake the driver.
-   * Waking input submitted after active cancellation is queued for the next
-   * turn and runs when the aborted activity converges to idle; a `disposed`
-   * cancel leaves it parked. A wake submitted while already idle always opens
-   * its turn boundary, even when its message is cleared before the driver
-   * claims ([cancel-convergence wake latch](../../../../.agents/notes/implemented/bug-fix/2026-08-07-cancel-convergence-wake-latch.md)).
-   * @param message - identified content and the source that supplied it.
-   * @param target - the preferred next-turn or next-step inbox boundary.
-   * @param wakeup - whether delivery may wake the driver.
-   */
-  send(message: UserMessage, target: InboxTarget, wakeup: boolean): void;
-  /**
-   * Queue an ordinary follow-up turn and wake the driver. The item becomes the
-   * sole ordinary message of its own turn.
-   * @param message - identified prompt content and the source that supplied it.
-   */
-  followup(message: UserMessage): void;
-  /**
-   * Submit steering for the nearest step. An idle driver starts a turn;
-   * a running driver consumes it at its next step boundary.
-   * A rejected step leaves steering parked in the inbox until the next
-   * wake; cancellation or disposal may discard pending steering.
-   * @param message - identified steering content and the source that supplied it.
-   */
-  steer(message: UserMessage): void;
-  /**
-   * Queue model-facing context for the next pre-step without waking the
-   * driver. A running driver claims it at the nearest later step boundary;
-   * idle drivers leave it pending until follow-up or steering
-   * wakes them. It may miss a request whose pre-step already claimed its
-   * batch. Cancellation or disposal may discard pending context.
-   * @param message - identified injected context and the source that supplied it.
-   */
-  inject(message: UserMessage): void;
+/** One process-local live assistant streaming publication. */
+type AssistantStreamFrame = {
+  readonly type: 'start';
+  readonly attemptId: LlmAttemptId; /** Monotone within one attached Agent lifecycle; replacement restarts at 1. */
+  readonly revision: number;
+  readonly turn: number;
+  readonly step: number;
+} | {
+  readonly type: 'chunk';
+  readonly attemptId: LlmAttemptId;
+  readonly revision: number; /** Dense zero-based position within the attempt. */
+  readonly index: number; /** Safe-integer timestamp reused by the durable embedded stream. */
+  readonly time: number;
+  readonly chunk: StreamChunk;
+} | {
+  readonly type: 'end';
+  readonly attemptId: LlmAttemptId;
+  readonly revision: number; /** Number of chunk frames emitted by this attempt. */
+  readonly index: number; /** Durable settlement committed before this notification, or live abandonment without one. */
+  readonly outcome: {
+    readonly kind: 'committed';
+    readonly eventType: 'assistant/message' | 'assistant/attempt';
+    readonly seq: SessionSeq;
+  } | {
+    readonly kind: 'abandoned';
+  };
+};
+declare module './types.ts' {
+  interface Agent {
+    /** The provider route and model this agent's requests use. */
+    readonly options: AgentOptions;
+    /** The live session this agent drives; its log is the durable source of truth. */
+    readonly session: Session;
+    /** Agent-owned access to durable pending work. */
+    readonly inbox: Inbox;
+    /** The current lifecycle state, mirrored on every `agent/status` transition. */
+    readonly status: AgentStatus;
+    /** Agent-scoped context; its contributions are agent-local, unwind on disposal, and reject registration afterward. */
+    readonly ctx: Context;
+    /**
+    * Clear queued and steering work — unless `keepInbox` — and abort the active
+    * turn or between-turn task. The first cause wins for that activity. With no
+    * active activity, cancellation is a no-op and does not arm later work.
+    * @param cause - the stable caller intent carried by the active operation signal.
+    * @param options - cancellation options; `keepInbox` preserves pending work.
+    */
+    cancel(cause: AgentCancelCause, options?: CancelOptions): void;
+    /**
+    * Resolve after the current whole-agent activity reaches quiescence. This
+    * follows replacement work started before the observed driver retires,
+    * but does not identify the settlement of any particular message.
+    * @returns fulfillment after no active driver or maintenance task remains.
+    */
+    whenIdle(): Promise<void>;
+    /**
+    * Run one non-turn maintenance task from the true idle phase. The task starts
+    * synchronously after claiming that phase; later waking input remains in the
+    * inbox until the task settles, while public status stays `idle`.
+    * `whenIdle()` follows both the task and any waking work released behind it.
+    * @param task - operation whose fulfillment or rejection is preserved, with a signal aborted by {@link cancel}.
+    * @throws synchronously when turn-driving or another maintenance task already owns the agent.
+    * @returns the task promise.
+    */
+    runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T>;
+    /**
+    * Route identified input to an inbox boundary and optionally wake the driver.
+    * Waking input submitted after active cancellation is queued for the next
+    * turn and runs when the aborted activity converges to idle; a `disposed`
+    * cancel leaves it parked. A wake submitted while already idle always opens
+    * its turn boundary, even when its message is cleared before the driver
+    * claims ([cancel-convergence wake latch](../../../../.agents/notes/implemented/bug-fix/2026-08-07-cancel-convergence-wake-latch.md)).
+    * @param message - identified content and the source that supplied it.
+    * @param target - the preferred next-turn or next-step inbox boundary.
+    * @param wakeup - whether delivery may wake the driver.
+    */
+    send(message: UserMessage, target: InboxTarget, wakeup: boolean): void;
+    /**
+    * Queue an ordinary follow-up turn and wake the driver. The item becomes the
+    * sole ordinary message of its own turn.
+    * @param message - identified prompt content and the source that supplied it.
+    */
+    followup(message: UserMessage): void;
+    /**
+    * Submit steering for the nearest step. An idle driver starts a turn;
+    * a running driver consumes it at its next step boundary.
+    * A rejected step leaves steering parked in the inbox until the next
+    * wake; cancellation or disposal may discard pending steering.
+    * @param message - identified steering content and the source that supplied it.
+    */
+    steer(message: UserMessage): void;
+    /**
+    * Queue model-facing context for the next pre-step without waking the
+    * driver. A running driver claims it at the nearest later step boundary;
+    * idle drivers leave it pending until follow-up or steering
+    * wakes them. It may miss a request whose pre-step already claimed its
+    * batch. Cancellation or disposal may discard pending context.
+    * @param message - identified injected context and the source that supplied it.
+    */
+    inject(message: UserMessage): void;
+  }
 }
 declare module '@deepseek-ai/cordis' {
   interface Events {
     /**
-     * A fully configured agent and live session were published. Setup is
-     * composition-only; `agent/session-start` is the first startup-driving extension point.
-     * Synchronous listener failure vetoes publication, while returned-promise
-     * rejection is reported. Detach requested during dispatch waits until every
-     * creation listener has observed the stable entry.
+     * An entered agent is ready for per-agent initialization after factory setup.
+     * Listeners run in order and are awaited before creation resolves. AgentLoop
+     * holds queued input until all listeners finish. A throw or rejection fails
+     * creation and skips later listeners. Disposal retains the scope and session
+     * until dispatch settles; listeners must not await agent.whenIdle() or their
+     * own owner's disposal.
      * @param payload.agent - the newly registered agent with its live session and completed setup.
+     * @param payload.source - fresh creation, resume, clear, or compaction source.
+     * @param payload.signal - factory initialization cancellation signal, when provided.
      * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.
-     * @mode emit
+     * @mode serial
      */
     'agent/created'(this: Scoped<Agent>, payload: {
       agent: Agent;
-    }): void;
+      source: SessionStartSource;
+      signal?: AbortSignal;
+    }): undefined | Promise<undefined>;
     /**
      * An agent left the registry; AgentLoop emits this after driver quiescence
      * and scoped-registration unwind, but before session detachment. Custom
@@ -2222,20 +2900,6 @@ declare module '@deepseek-ai/cordis' {
       message: UserMessage;
     }): void;
     /**
-     * The session lifecycle began, once before the first turn. Use
-     * `agent.inject()` to seed model-facing context. This is a notification, not
-     * a veto; disposal requested by a lifecycle owner is rechecked before the
-     * driver starts.
-     * @param payload.agent - the agent whose session lifecycle began.
-     * @param payload.source - why the session started (fresh startup, resume, …).
-     * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.
-     * @mode emit
-     */
-    'agent/session-start'(this: Scoped<Agent>, payload: {
-      agent: Agent;
-      source: SessionStartSource;
-    }): void;
-    /**
      * Reject a proposed step or replace the messages that enter it. Calling
      * `next()` preserves the current messages.
      * @param payload.agent - the agent proposing the step.
@@ -2256,8 +2920,12 @@ declare module '@deepseek-ai/cordis' {
     /**
      * Replace the frozen call configuration. `await next()` yields the config
      * the machine would use (agent options on the first request, the logged
-     * header afterwards); return a replacement to switch. Model-visible
-     * content must use logged channels; this waterfall cannot mutate messages.
+     * header afterwards); return a replacement to switch. On step admission,
+     * this runs after assembly and `step/start`, before the system prompt and
+     * accepted user batch are committed. Cancellation here or during subsequent
+     * `prepareCall()` resolution commits neither. The prepared call capability
+     * governs prompt admission. Model-visible content must use logged channels;
+     * this waterfall cannot mutate messages.
      * @param payload.agent - the agent making the model call.
      * @param payload.turn - the open turn number.
      * @param payload.step - the step whose request this is.
@@ -2295,6 +2963,19 @@ declare module '@deepseek-ai/cordis' {
       retryPolicy: ResolvedRetryPolicy | undefined;
       signal: AbortSignal;
     }, next: () => Promise<RequestErrorAction>): Promise<RequestErrorAction>;
+    /**
+     * Process-local assistant-stream publication. Chunk frames are transient;
+     * the loop appends one final v2 `assistant/message` or `assistant/attempt`
+     * with the same stream before a committed end frame.
+     * @param payload.agent - the agent whose attempt produced the frame.
+     * @param payload.frame - one ordered start, chunk, or end publication.
+     * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.
+     * @mode emit
+     */
+    'agent/assistant-stream'(this: Scoped<Agent>, payload: {
+      agent: Agent;
+      frame: AssistantStreamFrame;
+    }): void;
     /**
      * The turn is about to close: the model owes no response (no live tool
      * calls, no fresh steering). Awaited before the boundary commits — a
@@ -2336,7 +3017,25 @@ declare module '@deepseek-ai/cordis' {
   }
 } //# sourceMappingURL=runtime-types.d.ts.map
 //#endregion
-//#region ../../deepseek-harness/packages/core/system-prompt/lib/types/index.d.ts
+//#region ../../packages/core/agent/lib/types/projection.d.ts
+declare module '@deepseek-ai/dsh-session-projection/types' {
+  interface SessionProjectionStateMap {
+    /** The agent session's open/last turn and step boundary facts (whole value). */
+    turnBoundary: TurnBoundaryProjection;
+  }
+}
+//#endregion
+//#region ../../packages/core/agent/lib/types/model-selection.d.ts
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'model-selection': {
+      kind: 'model-selection';
+    } & ContextFormed;
+  }
+}
+/** Complete provider, model, and optional reasoning effort selected for one live Agent. */
+//#endregion
+//#region ../../packages/core/system-prompt/lib/types/index.d.ts
 declare module '@deepseek-ai/cordis' {
   interface Context {
     systemPrompt: SystemPrompt;
@@ -2378,17 +3077,18 @@ interface PromptSection {
   /** Unique name — a duplicate registration throws (see {@link SystemPrompt.section}). */
   readonly name: string;
   /**
-   * Sections are concatenated in ascending order. Convention: `-100` is the
-   * harness identity, `0` the deployment persona, tool guidance uses 100–199;
-   * other negative orders also render before the persona.
+   * Sections are concatenated in ascending order. Equal orders use code-unit
+   * name order.
    */
   readonly order: number;
   /**
    * Static text or a provider evaluated at each assembly with that assembly's
    * {@link AssembleContext}. The text may reference `{{variable}}`s — they are
-   * interpolated later, by {@link renderPrompt}.
+   * interpolated later, by {@link renderPrompt}, unless `interpolate` is false.
    */
   readonly text: string | ((context: AssembleContext) => string);
+  /** Whether to interpolate prompt variables. Defaults to true; false preserves literal text. */
+  readonly interpolate?: boolean;
   /**
    * Treat this contribution as the complete system prompt. Assembly still
    * runs the cooperative waterfall so tools, contexts, and variables can be
@@ -2412,6 +3112,8 @@ interface AssembledSection {
   name: string;
   /** The resolved (but not yet interpolated) section text. */
   text: string;
+  /** Whether to interpolate prompt variables. Defaults to true; false preserves literal text. */
+  interpolate?: boolean;
 }
 /** One resolved dynamic context contribution. */
 interface AssembledContext {
@@ -2437,17 +3139,65 @@ interface PromptAssembly {
   tools: ToolSchema[];
   variables: Record<string, string | undefined>;
 }
-/** Plugin config: the deployment-authored fragment of the system prompt (see {@link Config.persona} for its contract). */
+declare const SECTION_ORDERS: {
+  readonly HARNESS_IDENTITY: -1000;
+  readonly DEPLOYMENT_PERSONA_PREFIX: 0;
+  readonly PLAN_POLICY: 500;
+  readonly TEAM_POLICY: 600;
+  readonly PTC_ONLY: 800;
+  readonly FILE_REFERENCE: 900;
+  readonly TOOL_BASH: 1000;
+  readonly TOOL_PWSH: 1010;
+  readonly TOOL_READ: 1100;
+  readonly TOOL_WRITE: 1200;
+  readonly TOOL_EDIT: 1300;
+  readonly TOOL_GLOB: 1400;
+  readonly TOOL_GREP: 1500;
+  readonly TOOL_JOBS: 1600;
+  readonly TOOL_PTY: 1700;
+  readonly TOOL_WEB_SEARCH: 2000;
+  readonly TOOL_WEB_FETCH: 2100;
+  readonly TOOL_LSP: 2200;
+  readonly TOOL_SESSION_QUERY: 2300;
+  readonly TOOL_GOAL: 2400;
+  readonly TOOL_WORKFLOW: 2600;
+  readonly TOOL_RALPH: 2700;
+  readonly TOOL_SUBAGENT: 2800;
+  readonly TOOL_REPORT: 2900;
+  readonly TOOL_COMPUTER_USE: 3000;
+  readonly MCP_SERVERS: 3100;
+  readonly TOOLS_SDK: 5000;
+  readonly DELIVERABLE_FILE_REFERENCES: 9000;
+  readonly STRUCTURED_OUTPUT: 9900;
+  readonly HARNESS_SOURCE: 10000;
+  readonly WEB_SURFACE: 10100;
+  readonly DEPLOYMENT_PERSONA_SUFFIX: 10200;
+};
+/** Name of a centrally allocated prompt-section position. */
+type PromptSectionOrderName = keyof typeof SECTION_ORDERS;
+declare const CONTEXT_ORDERS: {
+  readonly SANDBOX_POLICY: 110;
+  readonly APPROVAL_POLICY: 115;
+  readonly SUBAGENT_DELEGATION: 120;
+};
+/** Name of a centrally allocated runtime-context position. */
+type PromptContextOrderName = keyof typeof CONTEXT_ORDERS;
+/** Plugin config: the deployment-authored fragment of the system prompt (see {@link Config.personaPrefix} for its contract). */
 interface Config$1 {
   /** Include the fixed DeepSeek Harness identity before the deployment persona (default true). */
   includeHarnessIdentity?: boolean;
   /** Include dynamic runtime-context snapshots in model history (default true). */
   includeRuntimeContext?: boolean;
   /**
-   * Deployment-wide order-0 persona template. A scoped section named
-   * `deployment:persona` shadows it; `{{variable}}` references are strict.
+   * Deployment-wide persona prefix template before first-party guidance. A scoped section named
+   * `deployment:persona-prefix` shadows it; `{{variable}}` references are strict.
    */
-  persona?: string;
+  personaPrefix?: string;
+  /**
+   * Persona suffix template after first-party guidance. A scoped `deployment:persona-suffix`
+   * section shadows it; `{{variable}}` references are strict. Defaults to empty.
+   */
+  personaSuffix?: string;
   /**
    * Model-facing tool names in order, with {@link TOOL_ORDER_REST} exactly once.
    * Invalid fields fail at load and unknown names fail at assembly; known names
@@ -2470,6 +3220,18 @@ declare class SystemPrompt extends Service {
    * @returns the exact Cordis effect disposer.
    */
   section(section: PromptSection): () => void;
+  /**
+   * Resolve the centrally owned placement of a repository prompt section.
+   * @param name - stable section placement name.
+   * @returns the section's numeric sort order.
+   */
+  getSectionOrder(name: PromptSectionOrderName): number;
+  /**
+   * Resolve the centrally owned placement of a repository runtime context.
+   * @param name - stable context placement name.
+   * @returns the context's numeric sort order.
+   */
+  getContextOrder(name: PromptContextOrderName): number;
   /**
    * Register ordered dynamic context in the calling context's scope. Scoped
    * entries shadow global entries with the same name.
@@ -2513,28 +3275,10 @@ declare class SystemPrompt extends Service {
   assemble(context?: AssembleContext): Promise<PromptAssembly>;
 }
 //#endregion
-//#region ../../deepseek-harness/packages/core/agent/lib/types/index.d.ts
-declare module '@deepseek-ai/dsh-typert-protocol' {
-  interface TypertLookupMap {
-    agent: TypertLookup<Agent, SessionId>;
-  }
-  interface TypertContextMap {
-    agent: TypertContext<SessionId>;
-  }
-}
+//#region ../../packages/core/agent/lib/types/index.d.ts
 declare module '@deepseek-ai/cordis' {
   interface Context {
     agents: AgentRegistry;
-    /**
-     * The agent association installed as an own property on `Agent.ctx`, or
-     * `undefined` on a plain context. Contexts derived from `Agent.ctx` inherit
-     * the association; a deliberately nested scope may carry a nearer
-     * `dsh-scope` tag while retaining it, so this field is DX context rather
-     * than the scope resolver. {@link AgentRegistry} registers a root accessor
-     * defaulting to `undefined`, and core packages below the agent layer use
-     * `scopeOf()` for layer selection instead of reading this field.
-     */
-    agent?: Agent;
   }
 }
 /**
@@ -2551,9 +3295,10 @@ interface AgentSetupCommit {
 /**
  * Compose an unpublished Agent scope and optionally return its publication commit.
  * @param agentCtx - unpublished Agent scope.
+ * @param agent - unpublished Agent being composed.
  * @returns an optional synchronous commit invoked after setup awaits settle and immediately before publication.
  */
-type AgentSetup = (agentCtx: Context) => AgentSetupCommit | Promise<AgentSetupCommit | void> | void;
+type AgentSetup = (agentCtx: Context, agent: Agent) => AgentSetupCommit | Promise<AgentSetupCommit | void> | void;
 /**
  * Options for programmatically creating an agent through the registry factory
  * ({@link AgentRegistry.create}). The caller supplies the single live
@@ -2564,11 +3309,13 @@ type AgentSetup = (agentCtx: Context) => AgentSetupCommit | Promise<AgentSetupCo
 interface CreateAgentOptions {
   /** The live agent/session identity. */
   readonly sessionId: SessionId;
+  /** Live parent Agent for runtime ownership; omit for a root Agent. */
+  readonly parentAgent?: Agent;
   /**
    * Session creation metadata: validated absolute `cwd`, `parentSession`
-   * fork lineage, the `seedLength` seed boundary, the coarse `origin`
+   * fork lineage, the `isSeeded` fork marker, the coarse `origin`
    * classification, and the `delegationDepth` recursion budget. Mirrors the
-   * `cwd`/`parentSession`/`seedLength`/`origin`/`delegationDepth` fields of
+   * `cwd`/`parentSession`/`isSeeded`/`origin`/`delegationDepth` fields of
    * {@link CreateSessionOptions.meta} in dsh-session (the internal-only
    * `createdAt`, used when reconstructing a persisted session, is deliberately
    * excluded — a factory caller never sets it). This is durable session data,
@@ -2578,17 +3325,18 @@ interface CreateAgentOptions {
   readonly meta?: {
     readonly cwd?: string;
     readonly parentSession?: SessionId;
-    readonly seedLength?: number;
+    readonly isSeeded?: boolean;
     readonly origin?: 'subagent';
     readonly delegationDepth?: number;
     readonly agentPreset?: string;
   };
+  /** Exact fork-inherited prefix length when the session metadata sets `isSeeded`. */
+  readonly inheritedEventCount?: SessionLogOffset;
   /**
-   * Initial replay/fork history. A fork supplies a balanced completed-turn
-   * prefix of the parent's log. The complete seed must be contiguous from seq
-   * 0, carry only lossless-JSON data, and contain no open turn/step or dangling
-   * tool call. The factory passes it to the session's durable
-   * validator/snapshot boundary before publication.
+   * Initial replay/fork history, contiguous from seq 0 with lossless-JSON data.
+   * A fork supplies an exact parent prefix, its inherited marker, and closers
+   * for the open tail. Previously closed steps and turns remain unchanged.
+   * The factory validates and snapshots the seed before publication.
    */
   readonly seed?: readonly SessionEvent[];
   /** Per-agent options (model, …). */
@@ -2605,7 +3353,7 @@ interface CreateAgentOptions {
    * the exact publication boundary. Everything registered through `agentCtx`
    * (scoped tools, prompt sections/variables, `restrict()`, listeners, awaited
    * child plugins) exists before `session/created`, `agent/created`,
-   * `agent/session-start`, and the first prompt assembly. A setup
+   * and the first prompt assembly. A setup
    * throw/rejection, commit throw, or owner disposal rolls the scope back
    * without publishing either id.
    *
@@ -2622,6 +3370,8 @@ interface CreateAgentOptions {
 interface ResumeAgentOptions {
   /** The persisted session id to load and use as the live agent/session identity. */
   readonly resumeSessionId: SessionId;
+  /** Live parent Agent for runtime ownership; omit for a root Agent. */
+  readonly parentAgent?: Agent;
   /** Per-agent options (model, …). */
   readonly agentOptions?: AgentOptions;
   /** Optional creation-only cancellation signal for persistence load/setup; detached before return. */
@@ -2665,8 +3415,8 @@ interface AgentFactory {
   /**
    * Create a new agent on a caller-supplied session id. Async because creation
    * awaits unpublished setup, invokes its optional synchronous commit, inserts
-   * both session and agent, emits their creation notifications in order, emits
-   * `agent/session-start`, and only then starts the loop. The sequence is
+   * both session and agent, announces session creation, and awaits serial
+   * `agent/created` listeners before releasing queued work. The sequence is
    * rollback-covered, but notifications delivered before a later listener
    * failure remain observable; every agent or session creation announcement
    * that began is paired by `agent/disposed` or `session/disposed` during
@@ -2677,18 +3427,19 @@ interface AgentFactory {
    * transaction and resulting lifecycle to that owner; it must not infer
    * ownership from the factory object's registration context.
    * @param ownerCtx - caller-bound context that owns the transaction and live handle.
-   * @param options - agent/session identity, configuration, and optional setup.
-   * @returns the owned handle after setup, both announcements, and loop start complete.
+   * @param options - agent/session identity, configuration, optional live parent, and setup.
+   * @returns the owned handle after setup and both creation announcements complete.
    */
   createAgent(ownerCtx: Context, options: CreateAgentOptions): Promise<AgentHandle>;
   /**
-   * Prepare a persisted session and resume an agent on it. Async because it awaits
-   * both `ctx.sessionPersistence.prepare` and the optional unpublished setup
-   * transaction; must be called after that service exists (consumers inject
-   * `sessionPersistence`). Publication follows the same setup-commit and
-   * ordered boundary as {@link createAgent}.
+   * Resume an agent on a persisted session. Async because it opens the
+   * persisted session for write, reads and repairs the log, publishes it, and
+   * awaits the optional unpublished setup transaction; must be called after
+   * `ctx.sessionPersistence` exists (consumers inject `sessionPersistence`).
+   * Publication follows the same setup-commit and ordered boundary as
+   * {@link createAgent}.
    * @param ownerCtx - caller-bound context that owns load, setup, and the live handle.
-   * @param options - persisted identity, configuration, and optional setup.
+   * @param options - persisted identity, configuration, optional live parent, and setup.
    * @returns the owned handle after setup, both announcements, and loop start complete.
    */
   resume(ownerCtx: Context, options: ResumeAgentOptions): Promise<AgentHandle>;
@@ -2719,7 +3470,8 @@ declare class AgentRegistry extends Service {
    * Read the Agent that initiated the inherited asynchronous driver chain.
    * Use this optional form for logging, tracing, metrics, or host attribution
    * that also supports agentless calls. When a parent creates a child, setup
-   * reports the causal parent while `agentCtx.agent` identifies the child.
+   * reports the causal parent while the setup callback's Agent parameter
+   * identifies the child.
    * @returns the inherited Agent, or `undefined` outside an initiator boundary
    *   and inside an explicit clearing boundary.
    * @throws when this service instance has been disposed.
@@ -2781,7 +3533,7 @@ declare class AgentRegistry extends Service {
    * agent): this constructs the agent and its session. Rejects if no factory is
    * registered or creation/setup fails. The resolved {@link AgentHandle} lets
    * the owner tear down exactly this agent.
-   * @param options - shared identity, session seed/metadata, and agent options.
+   * @param options - shared identity, optional live parent, session seed/metadata, and agent options.
    * @returns the handle after setup, rollback-covered publication, and loop start complete.
    */
   create(options: CreateAgentOptions): Promise<AgentHandle>;
@@ -2789,20 +3541,21 @@ declare class AgentRegistry extends Service {
    * Load a persisted session and resume an agent on it through the registered
    * factory. Rejects if no factory is registered; the factory rejects if
    * session persistence is not configured or persistence/setup fails.
-   * @param options - persisted identity, configuration, and optional setup.
+   * @param options - persisted identity, optional live parent, configuration, and setup.
    * @returns the handle after setup, rollback-covered publication, and loop start complete.
    */
   resume(options: ResumeAgentOptions): Promise<AgentHandle>;
   /**
-   * Register a live agent. Throws if an agent with the same id is already
-   * registered. Emits `agent/created` on registration and `agent/disposed`
+   * Register a live agent with source `startup`. Rejects if the id is already registered or a
+   * serial `agent/created` listener fails. Emits `agent/disposed`
    * when the calling fiber is disposed — both with the agent's scope carrier
    * (`scopeTarget(agent, agent)`): the subject is the agent in hand, so the
    * emits are scope-filtered regardless of which context invoked `register`
    * (calling through `agent.ctx` scopes EFFECTS; dispatch scoping always
-   * requires passing the carrier). Returns the disposer.
+   * requires passing the carrier). The entry is a runtime root; factory-backed
+   * creation uses `options.parentAgent` for child ownership. Await the registration before using the agent.
    * @param agent - the already-constructed agent to record in the store.
-   * @returns the EXACT Cordis effect disposer (single-shot; a repeat call
+   * @returns the awaitable Cordis effect disposer (single-shot; a repeat call
    *   returns undefined without awaiting an in-flight teardown). Exact
    *   identity is load-bearing: a composite (generator) effect that owns a
    *   teardown ORDER — the agent factory's lifecycle chain — must yield THIS
@@ -2811,7 +3564,7 @@ declare class AgentRegistry extends Service {
    *   owner unload, unregistering the agent (and emitting `agent/disposed`)
    *   while its final turn is still draining.
    */
-  register(agent: Agent): () => void;
+  register(agent: Agent): ReturnType<Context['effect']>;
   /**
    * Insert an already-constructed agent without announcing it. This is the
    * advanced ordered-lifecycle primitive used by the async agent factory: it
@@ -2819,13 +3572,13 @@ declare class AgentRegistry extends Service {
    * returned detach closure into its pre-installed composite teardown before
    * calling {@link announce}. Ordinary callers use {@link register}.
    * @param agent - the prepared, unpublished agent.
-   * @param owner - live agent whose scoped context created this agent, or
+   * @param owner - explicitly supplied live runtime owner, or
    *   undefined for a top-level runtime root. This is runtime ownership, not
    *   the resumed session's durable parent lineage.
    * @returns an idempotent closure that removes this exact entry and emits
    *   `agent/disposed` with listener failures contained. When called from a
-   *   synchronous `agent/created` listener, removal and disposal wait until
-   *   that creation dispatch unwinds.
+   *   `agent/created` listener, removal and disposal wait until the serial
+   *   creation dispatch settles.
    */
   enter(agent: Agent, owner: Agent | undefined): () => void;
   /** Remove one exact entered agent and emit its paired disposal when announced. */
@@ -2835,11 +3588,14 @@ declare class AgentRegistry extends Service {
   /**
    * Announce an agent previously inserted with {@link enter}.
    * @param agent - the live inserted agent to announce.
+   * @param source - fresh creation, resume, clear, or compaction source.
+   * @param signal - optional factory initialization cancellation signal passed to listeners.
+   * @returns completion of the serial creation listeners; a listener failure rejects.
    * @throws if `agent` is not the exact live registry entry for its id, or its
    *   creation announcement already began (including a reentrant call from a
    *   creation listener).
    */
-  announce(agent: Agent): void;
+  announce(agent: Agent, source: SessionStartSource, signal?: AbortSignal): Promise<void>;
   /**
    * Look up a live agent.
    * @param id - the shared agent/session id to look up.
@@ -2929,6 +3685,17 @@ interface SwarmRuntimeConfig {
   readonly chat: ChatDefaults;
   /** Memory view bounds. */
   readonly memory: MemoryDefaults;
+  /** Upper bound for one engine turn's reply wait, in milliseconds. */
+  readonly turnTimeoutMs: number;
+}
+/**
+ * One engine turn stopped for a reason the engine should treat as a chat stop
+ * condition rather than an internal failure: the speaker was interrupted
+ * (`interrupted`) or never answered inside the turn timeout (`timeout`).
+ */
+declare class RoleTurnError extends Error {
+  readonly reason: 'interrupted' | 'timeout';
+  constructor(message: string, reason: 'interrupted' | 'timeout');
 }
 /** One process-local, disposable Swarm runtime attached to one orchestrator root agent. */
 declare class SwarmRuntime {
@@ -2940,6 +3707,19 @@ declare class SwarmRuntime {
   private readonly children;
   /** Live HITL waits, request id → cancellation. A pending wait is swarm-level: role interrupts do not touch it, terminate/dispose cancel it. */
   private readonly pendingHitl;
+  /**
+   * Per-role cancellation for the turn currently in flight. `interrupt` and
+   * settlement abort it so `swarm_next_turn` never waits forever on a child
+   * that will not answer.
+   */
+  private readonly roleTurns;
+  /** True while one `swarm_next_turn` call drives this swarm (explicit serialization). */
+  private turnInFlight;
+  /** `hitl-<n>` / `mem-<n>` counters mirrored in memory; `hydrate` reseeds them from the log. */
+  private hitlCount;
+  private memoryCount;
+  /** Last fold, keyed by log length + topology + memory limit; the log only grows. */
+  private foldCache;
   private topology;
   private terminated;
   /** Structural state (roles, topology, termination) changed since the last checkpoint. */
@@ -2951,6 +3731,22 @@ declare class SwarmRuntime {
   get currentTopology(): TopologyMode;
   /** Whether this swarm has been terminated. */
   get isTerminated(): boolean;
+  /**
+   * Reject a mutating entry point once the swarm is terminated. Guarantees the
+   * durable log never gains a `swarm/*` fact after `swarm/destroyed` (audit
+   * G4-04/G4-06): a terminated swarm must not spawn orphans or block on HITL.
+   * @param action - human-readable action for the error message.
+   */
+  private assertActive;
+  /**
+   * Claim the single in-flight turn slot. The host scheduler already runs these
+   * tools exclusively, but the contract is made explicit here so a direct
+   * caller (another plugin, PTC nesting, tests) cannot interleave two engines.
+   * @returns true when the caller owns the slot until {@link endTurn}.
+   */
+  beginTurn(): boolean;
+  /** Release the turn slot claimed by {@link beginTurn}. */
+  endTurn(): void;
   /**
    * Restore this runtime's in-memory state from a folded event log. Used only
    * by cold resume, immediately after construction, before any tool runs.
@@ -2987,7 +3783,7 @@ declare class SwarmRuntime {
    * Route a message from one role (or the orchestrator) to another role.
    *
    * Attribution (`senderSessionId`) is computed exactly once and used for BOTH the
-   * `followup()` delivery and the logged `swarm/role-message` event, so the durable
+   * host-relay delivery and the logged `swarm/role-message` event, so the durable
    * log and the perceived sender never diverge.
    *
    * @param from - role name, `orchestrator`, or `human` (operator answer routed by `swarm_ask_user`).
@@ -3009,14 +3805,43 @@ declare class SwarmRuntime {
   deliverUnlogged(to: string, text: string, signal: AbortSignal): Promise<void>;
   /**
    * Resolve which session id the recipient perceives as the sender.
-   * - `peer` attribution (or `peer` topology): the sending role itself.
-   * - otherwise (`parent-child` topology, or explicit `orchestrator`): the orchestrator.
+   * - explicit `orchestrator`: the orchestrator.
+   * - explicit `peer` in `mixed` topology, or `peer` topology: the sending role.
+   * - otherwise (`parent-child`): the orchestrator.
+   *
+   * An explicit `peer` override is ignored outside `mixed` (audit G4-12.5): the
+   * tool documents it as meaningful only there, and `parent-child` must stay
+   * the safe default.
    */
   private resolveSenderSessionId;
-  /** Interrupt one or all roles (fire-and-return). */
+  /**
+   * Interrupt one or all roles (fire-and-return).
+   *
+   * Every step is best-effort (audit G4-03): a rejected `subagents.interrupt`
+   * (for example `UNAUTHORIZED` after a child was resumed as its own root) must
+   * not skip the `swarm/role-exited` fact or leave the role in the active set.
+   * An in-flight turn for the role is aborted so the engine cannot wait forever.
+   */
   interrupt(roleName: string | undefined): void;
-  /** Mark a role as settled without removing its durable child mapping. */
-  markRoleSettled(roleName: string, outcome: 'settled' | 'error'): void;
+  /**
+   * Mark a role as settled and drop its live child mapping. The durable
+   * `swarm/role-spawned` fact keeps the historical child id; the live map only
+   * tracks roles the swarm may still drive or interrupt.
+   * @param roleName - the role that ended.
+   * @param outcome - how it ended.
+   * @returns true when a running role was marked.
+   */
+  markRoleSettled(roleName: string, outcome: 'settled' | 'error'): boolean;
+  /**
+   * Settle the role owning one child session after the host reported that the
+   * child finished. Without this the fold shows every role as running forever:
+   * `no-roles` is unreachable, the panel lies, and a cold resume re-wakes a
+   * finished child (audit G4-07).
+   * @param childId - the settled child's session id.
+   * @param outcome - how it ended.
+   * @returns true when a running role owned that child.
+   */
+  markChildSettled(childId: SessionId$2, outcome: 'settled' | 'error'): boolean;
   /**
    * Ask the human operator one question and wait for the answer.
    *
@@ -3057,7 +3882,7 @@ declare class SwarmRuntime {
    * Group messages are log facts — every role observes the transcript through
    * the next turn prompt, so no per-role delivery happens here.
    */
-  recordGroupMessage(speaker: string, content: string): void;
+  recordGroupMessage(speaker: string, content: string): boolean;
   /**
    * Run one engine turn: deliver the turn prompt to the speaker and await the
    * assistant reply it produces.
@@ -3074,13 +3899,36 @@ declare class SwarmRuntime {
    * @returns the reply text.
    */
   runTurn(roleName: string, prompt: string, signal: AbortSignal): Promise<string>;
-  /** Await the child's settled assistant reply to the user message `messageId`. */
+  /**
+   * Await the child's settled assistant reply to the user message `messageId`.
+   *
+   * "Not ready" is expressed as `undefined` and retried on the next event: the
+   * inbox accepts the delivery before its `user/message` is appended, so a miss
+   * must never fall back to scanning the whole log — doing that reported the
+   * PREVIOUS turn's reply as this one (audit G4-01). A timeout bounds the wait
+   * so an interrupted child cannot hang `swarm_next_turn` forever (G4-08).
+   */
   private awaitChildReply;
   /** Cancel every live HITL wait; the awaiting `askUser` calls log the cancellations. */
   private cancelPendingHitl;
-  /** Terminate the swarm: cancel pending HITL waits, interrupt every child, and append `swarm/destroyed`. */
+  /**
+   * Terminate the swarm: mark it terminated and append `swarm/destroyed` FIRST,
+   * then cancel pending HITL waits and interrupt every child best-effort.
+   *
+   * The order matters (audit G4-03): a rejected `subagents.interrupt` can no
+   * longer leave the swarm un-terminated with live roles. A repeated call still
+   * cancels a late wait (audit G4-06).
+   * @param reason - why the swarm ended.
+   */
   terminate(reason: string): void;
-  /** Build the current folded state from the session event log. */
+  /**
+   * Build the current folded state from the session event log.
+   *
+   * The fold is memoized on (log length, topology, memory limit): the log only
+   * grows, so repeated calls inside one tool invocation reuse the previous fold
+   * instead of rescanning every event (audit G4-11).
+   * @returns the folded state for this swarm.
+   */
   state(): SwarmState;
   /**
    * Write one memory entry and append its `swarm/memory-written` event. The id
@@ -3199,7 +4047,7 @@ declare function queryMemories(entries: readonly SwarmMemoryEntry[], query: stri
  * Fold every `swarm/*` session event into the current {@link SwarmState}.
  *
  * @param swarmId     - identity of the swarm (events for other swarms are ignored).
- * @param events      - the orchestrator session's full event log (`session.events`).
+ * @param events      - the orchestrator session's full event log (`session.snapshotEvents()`).
  * @param liveTopology - the runtime's in-memory topology (persisted events take precedence).
  * @param memoryLimit - view cap for `memories` (latest N entries); omitted means unbounded.
  *   A VIEW crop, not log truncation: the log only grows, so the fold stays
@@ -3209,7 +4057,7 @@ declare function queryMemories(entries: readonly SwarmMemoryEntry[], query: stri
 declare function foldSwarmEvents(swarmId: SwarmId, events: readonly SessionEvent[], liveTopology: TopologyMode, memoryLimit?: number): SwarmState;
 /**
  * Collect every swarm id ever created in one session log, in creation order.
- * @param events - the orchestrator session's full event log (`session.events`).
+ * @param events - the orchestrator session's full event log (`session.snapshotEvents()`).
  * @returns distinct swarm ids from `swarm/created` events.
  */
 declare function collectSwarmIds(events: readonly SessionEvent[]): SwarmId[];
@@ -3359,6 +4207,10 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
      */
     swarm: SwarmPanelModel;
   }
+  interface SessionProjectionStateMap {
+    /** The same whole-value panel model: the fold state IS the wire value. */
+    swarm: SwarmPanelModel;
+  }
 }
 /**
  * The projection unit's `apply`: fold one committed event into the panel
@@ -3438,6 +4290,20 @@ interface Config {
   chat?: ChatConfig;
   /** Memory view bounds. Defaults to `{ maxEntries: 200, queryLimit: 5 }`. */
   memory?: MemoryConfig;
+  /**
+   * Upper bound for one group-chat turn's reply wait, in milliseconds.
+   * Defaults to 300000 (5 minutes). A turn that exceeds it ends the chat with
+   * `turn-timeout` instead of leaving the tool call pending forever.
+   */
+  turnTimeoutMs?: number;
+  /**
+   * Session-readability rescue switch. `enabled: false` normally removes the
+   * event vocabulary too, which makes every previously written `swarm/*`
+   * session unreadable (audit G4-02: the platform offers no `ignorable` write
+   * path for out-of-repo events). Setting this `true` keeps the vocabulary
+   * registered while every other contribution stays disabled.
+   */
+  keepEventVocabularyWhenDisabled?: boolean;
 }
 /**
  * Install Swarm only for root agents published after this plugin loads.
@@ -3446,5 +4312,5 @@ interface Config {
  */
 declare function apply(ctx: Context, config?: Config): void;
 //#endregion
-export { ChatConfig, type ChatDefaults, type ChatEndedData, type ChatRunOutcome, type ChatStartedData, type ChatState, CheckpointConfig, type CheckpointFrequency, type CheckpointReason, type CheckpointRoleSnapshot, Config, type ContextUpdatedData, EngineError, type HitlAskResult, type HitlOption, type HitlRequestedData, type HitlResolvedData, type HumanInputMode, MemoryConfig, type MemoryDefaults, type MemoryWrittenData, type NextTurnOptions, type PendingHitl, type RoleExitedData, type RoleMessageData, type RoleModel, type RoleResumeRecord, type RoleSpawnedData, type RoleState, type SpeakerSelection, type SwarmAskUserValue, type SwarmCheckpointData, type SwarmCheckpointValue, type SwarmCreatedData, type SwarmDestroyedData, type SwarmGetContextValue, SwarmId, type SwarmListValue, type SwarmMemoryEntry, type SwarmMemoryHit, type SwarmMemoryQueryValue, type SwarmMemoryWriteValue, type SwarmNextTurnValue, type SwarmOkValue, type SwarmPanelChat, type SwarmPanelFlowMessage, type SwarmPanelHitl, type SwarmPanelMessage, type SwarmPanelModel, type SwarmPanelRole, type SwarmPanelSwarm, type SwarmResumedData, SwarmRuntime, type SwarmRuntimeConfig, type SwarmSendValue, type SwarmSetContextValue, type SwarmSpawnValue, type SwarmStartChatValue, type SwarmState, type SwarmTurnRecord, type TopologyChangedData, type TopologyMode, apply, applySwarmPanelEvent, collectSwarmIds, completedRounds, foldSwarmEvents, hydrateSwarmRuntimes, inboundMessages, inject, isValidRoleName, latestCheckpointAt, name, queryMemories, reactivateSwarmRoles, registerSwarmTools, runChatTurns, scoreMemory, selectNextSpeaker, tokenize };
+export { ChatConfig, type ChatDefaults, type ChatEndedData, type ChatRunOutcome, type ChatStartedData, type ChatState, CheckpointConfig, type CheckpointFrequency, type CheckpointReason, type CheckpointRoleSnapshot, Config, type ContextUpdatedData, EngineError, type HitlAskResult, type HitlOption, type HitlRequestedData, type HitlResolvedData, type HumanInputMode, MemoryConfig, type MemoryDefaults, type MemoryWrittenData, type NextTurnOptions, type PendingHitl, type RoleExitedData, type RoleMessageData, type RoleModel, type RoleResumeRecord, type RoleSpawnedData, type RoleState, RoleTurnError, type SpeakerSelection, type SwarmAskUserValue, type SwarmCheckpointData, type SwarmCheckpointValue, type SwarmCreatedData, type SwarmDestroyedData, type SwarmGetContextValue, SwarmId, type SwarmListValue, type SwarmMemoryEntry, type SwarmMemoryHit, type SwarmMemoryQueryValue, type SwarmMemoryWriteValue, type SwarmNextTurnValue, type SwarmOkValue, type SwarmPanelChat, type SwarmPanelFlowMessage, type SwarmPanelHitl, type SwarmPanelMessage, type SwarmPanelModel, type SwarmPanelRole, type SwarmPanelSwarm, type SwarmResumedData, SwarmRuntime, type SwarmRuntimeConfig, type SwarmSendValue, type SwarmSetContextValue, type SwarmSpawnValue, type SwarmStartChatValue, type SwarmState, type SwarmTurnRecord, type TopologyChangedData, type TopologyMode, apply, applySwarmPanelEvent, collectSwarmIds, completedRounds, foldSwarmEvents, hydrateSwarmRuntimes, inboundMessages, inject, isValidRoleName, latestCheckpointAt, name, queryMemories, reactivateSwarmRoles, registerSwarmTools, runChatTurns, scoreMemory, selectNextSpeaker, tokenize };
 //# sourceMappingURL=index.d.ts.map

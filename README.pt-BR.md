@@ -78,10 +78,10 @@ Crie ou abra uma session, peça ao Orchestrator para criar um swarm e abra a aba
 
 | Componente | Alvo |
 | --- | --- |
-| DeepSeek Harness | `0.1.0-rc.7` workspace API e versões compatíveis |
+| DeepSeek Harness | `0.2.0-rc.2` workspace API e versões compatíveis |
 | Node.js | `22.19+` ou Node `24+` |
 | Browser | DeepSeek Harness `web` profile |
-| Package | `dsh-swarm-panel@0.1.0` |
+| Package | `dsh-swarm-panel@0.2.0` |
 
 ## Status da verificação
 

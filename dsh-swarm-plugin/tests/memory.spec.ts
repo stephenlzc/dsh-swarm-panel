@@ -12,12 +12,12 @@ import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
-import { CallId, MessageId } from '@deepseek-ai/dsh-llm'
+import { MessageId, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
-import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
+import { deliverSubagentPrompt, type HostPromptDeliverer } from '@deepseek-ai/dsh-subagent/internal'
 import * as SubagentSpawn from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import { UserQuestionService } from '@deepseek-ai/dsh-user-questions'
 import * as agentSwarm from '../src/index.ts'
@@ -39,7 +39,6 @@ async function harness(root: string, config?: agentSwarm.Config): Promise<Contex
   await mountAgentLoopTestDependencies(ctx)
   await ctx.plugin(JsonlSessionPersistence, { root })
   await ctx.plugin(AgentLoop, { agents: [] })
-  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SubagentRuntime)
   await ctx.plugin(SubagentSpawn, { providerName: 'spawn' })
   await ctx.plugin(UserQuestionService)
@@ -67,8 +66,8 @@ function mockSpawn(ctx: Context, childIds: readonly string[]): void {
 /** All child ids accept followups. */
 function mockFollowup(ctx: Context): void {
   let count = 0
-  vi.spyOn(ctx.subagents, 'followup').mockImplementation(
-    (_parent: Agent, _childId: SessionId, _content: ContentBlock[], _options: { source: MessageSource; signal: AbortSignal }) => {
+  vi.spyOn(ctx.subagents as unknown as HostPromptDeliverer, deliverSubagentPrompt).mockImplementation(
+    (_parent: Agent, _childId: SessionId, _content: ContentBlock[], _source: MessageSource, _signal: AbortSignal) => {
       count += 1
       return Promise.resolve(MessageId(`accepted-${count}`))
     },
@@ -78,7 +77,7 @@ function mockFollowup(ctx: Context): void {
 function executeTool(ctx: Context, agent: Agent, name: string, args: Record<string, unknown>, callId: string) {
   return ctx.tools.execute({
     signal: new AbortController().signal,
-    callId: CallId(callId),
+    callId: ToolCallId(callId),
     name,
     arguments: args,
     agent,
@@ -162,7 +161,7 @@ describe('memory tools', () => {
     expect(first.value).toEqual({ swarmId: 's', id: 'mem-1' })
     expect(second.value).toEqual({ swarmId: 's', id: 'mem-2' })
 
-    const writes = agent.session.events.filter(event => event.type === 'swarm/memory-written')
+    const writes = agent.session.snapshotEvents().filter(event => event.type === 'swarm/memory-written')
     expect(writes).toHaveLength(2)
     expect(writes[0]?.data).toMatchObject({ swarmId: 's', id: 'mem-1', by: 'orchestrator', tags: ['api', 'decision'] })
     expect(writes[1]?.data).toMatchObject({ id: 'mem-2', by: 'worker' })
@@ -220,7 +219,7 @@ describe('memory tools', () => {
     const hits = await query(ctx, agent, { swarmId: 's', query: 'shared fact' }, 'query')
     // The oldest entry fell out of the fold view; the log still holds it.
     expect(hits.entries.map(entry => entry.id)).toEqual(['mem-3', 'mem-2'])
-    expect(agent.session.events.filter(event => event.type === 'swarm/memory-written')).toHaveLength(3)
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'swarm/memory-written')).toHaveLength(3)
   })
 
   it('keeps memories across a cold resume (full-log refold)', async () => {

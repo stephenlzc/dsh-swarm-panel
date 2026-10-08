@@ -1,45 +1,75 @@
 /**
  * Host-composed Conversation Flow: real web shell + this plugin's client
- * bundle. Run from the DeepSeek Harness repo:
+ * bundle. Run from a DeepSeek Harness checkout at tag `dsh-v0.2.0-rc.2`, with
+ * this package mounted at `plugins/dsh-swarm-panel` and the workspace libs and
+ * web dist built (`pnpm build:lib`, `pnpm build:native-system`, `pnpm build:web`).
  *
- *   pnpm exec vitest run --config vitest.web.config.ts \
- *     /Users/cong/Documents/AI_Project/dsh-swarm-panel/dsh-swarm-plugin/tests/host/conversation-flow.e2e.ts
+ * `vitest run --config vitest.web.config.ts <absolute test file>` no longer
+ * selects the file (vitest 4 filters explicit paths through `test.include`), so
+ * add this lane to a wrapper config's include and filter by its directory:
+ *
+ *   pnpm exec vitest run --config vitest.swarm-e2e.config.ts plugins/dsh-swarm-panel
  *
  * Not part of the plugin-local vitest include (see vitest.config.ts exclude).
  */
-import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Browser, Page } from 'playwright'
 import { chromium } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import {
-  launchWebScaffold,
-  realizeSeedFixture,
-  seedSession,
-  watchConsole,
-  type WebScaffold,
-} from '../../../../deepseek-harness/apps/web/tests/scaffold.ts'
-import { newEnglishPage } from '../../../../deepseek-harness/apps/web/tests/support.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const OVERLAY = join(HERE, 'dsh-swarm-panel.overlay.yml')
 const ASSET = join(HERE, '../../assets/swarm-panel.png')
 const EVIDENCE = process.env.CONVERSATION_FLOW_EVIDENCE ?? dirname(ASSET)
-const LIGHTHOUSE = fileURLToPath(new URL(
-  '../../../../deepseek-harness/apps/web/tests/snapshots/lifecycle-chrome/session.jsonl',
-  import.meta.url,
-))
+
+/**
+ * Locate the DeepSeek Harness checkout this lane exercises. Two layouts resolve
+ * so the same file runs from the plugin checkout and from a package mounted
+ * inside the Harness tree, with no fixture symlink:
+ *  - sibling: `<parent>/dsh-swarm-panel/dsh-swarm-plugin/tests/host` → `<parent>/deepseek-harness`
+ *  - mounted: `<harness>/plugins/dsh-swarm-panel/tests/host`        → `<harness>`
+ * `DSH_HARNESS_ROOT` overrides both.
+ */
+function resolveHarnessRoot(): URL {
+  const override = process.env.DSH_HARNESS_ROOT
+  const candidates = override !== undefined && override.length > 0
+    ? [new URL(override.endsWith('/') ? override : `${override}/`)]
+    : [new URL('../../../../deepseek-harness/', import.meta.url), new URL('../../../../', import.meta.url)]
+  for (const candidate of candidates) {
+    if (existsSync(fileURLToPath(new URL('apps/web/tests/scaffold.ts', candidate)))) return candidate
+  }
+  throw new Error(
+    `host E2E cannot locate the DeepSeek Harness checkout; tried ${candidates.map(candidate => candidate.href).join(', ')}. `
+    + 'Run it from a Harness checkout with the workspace libs and web dist built, or set DSH_HARNESS_ROOT.',
+  )
+}
+
+const HARNESS_ROOT = resolveHarnessRoot()
+// Dynamic imports keep this file layout-independent; the Harness modules'
+// own imports (playwright, …) then resolve from the Harness tree.
+const { launchWebScaffold, realizeSeedFixture, seedSession, watchConsole } = await import(
+  new URL('apps/web/tests/scaffold.ts', HARNESS_ROOT).href
+)
+const { newEnglishPage } = await import(new URL('apps/web/tests/support.ts', HARNESS_ROOT).href)
+type WebScaffold = Awaited<ReturnType<typeof launchWebScaffold>>
+// Harness 0.2.0 keeps the web lane's fixtures under <repo>/snapshots/web and
+// versions the file name (the current session format is v4).
+const LIGHTHOUSE = fileURLToPath(new URL('snapshots/web/lifecycle-chrome/session.v4.jsonl', HARNESS_ROOT))
 const SEED_ID = 'conversation-flow-host'
 
+/**
+ * Harness 0.2.0 fixtures carry no \`seq\`/\`time\` envelope fields: the loader
+ * assigns both by row order, and mixing a sequenced row with unsequenced ones
+ * fails the fixture parser ("cannot mix projected and complete body rows").
+ * The swarm rows are therefore injected verbatim.
+ */
 function withSwarmFlow(raw: string): string {
   const lines = raw.trimEnd().split('\n')
-  const last = JSON.parse(lines.at(-1)!) as { type: string; seq: number; time: number }
+  const last = JSON.parse(lines.at(-1)!) as { type: string }
   if (last.type !== 'turn/end') throw new Error(`expected turn/end, got ${last.type}`)
-  const prior = JSON.parse(lines.at(-2)!) as { seq: number; time: number }
-  let seq = prior.seq + 1
-  let time = prior.time + 1
   const payloads: Array<{ type: string; data: Record<string, unknown> }> = [
     { type: 'swarm/created', data: { swarmId: 'default', createdAt: '2026-01-01T00:00:00Z' } },
     { type: 'swarm/topology-changed', data: { swarmId: 'default', mode: 'mixed' } },
@@ -83,9 +113,11 @@ function withSwarmFlow(raw: string): string {
       },
     },
   ]
-  const injected = payloads.map(event => JSON.stringify({ ...event, seq: seq++, time: time++ }))
-  last.seq = seq
-  last.time = time
+  // Harness 0.2.0's v4 reader refuses an unknown type unless the stored
+  // envelope marks it `ignorable` — the documented contract for out-of-repo
+  // plugin events. The production append path cannot set the marker yet, but
+  // the fixture is hand-authored and must carry it.
+  const injected = payloads.map(event => JSON.stringify({ ...event, ignorable: true }))
   return [lines[0], ...lines.slice(1, -1), ...injected, JSON.stringify(last)].join('\n') + '\n'
 }
 
@@ -96,7 +128,13 @@ describe('host Conversation Flow composition', () => {
   let tripwire: ReturnType<typeof watchConsole>
 
   beforeAll(async () => {
-    scaffold = await launchWebScaffold({ extraOverlayPath: OVERLAY })
+    scaffold = await launchWebScaffold({
+      extraOverlayPath: OVERLAY,
+      // The overlay inserts this package by bare name, so the scaffold profile
+      // must install it the way `dsh plugin add` does; without the profile
+      // package the loader reports "dsh-swarm-panel: failed to import".
+      profile: { packages: [{ dir: join(HERE, '..', '..'), enabled: false }] },
+    })
     const sessionCwd = join(scaffold.workspaceCwd, 'workspace')
     mkdirSync(sessionCwd, { recursive: true })
     const raw = await readFile(LIGHTHOUSE, 'utf8')
@@ -104,7 +142,8 @@ describe('host Conversation Flow composition', () => {
     browser = await chromium.launch()
     page = await newEnglishPage(browser, 1057)
     tripwire = watchConsole(page)
-    await page.goto(scaffold.baseUrl, { waitUntil: 'load' })
+    // 0.2.0 gates the shell behind the scaffold's process-token URL.
+    await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
     await page.waitForSelector('[class*="frame"]', { timeout: 30_000 })
   }, 120_000)
 

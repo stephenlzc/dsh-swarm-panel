@@ -65,7 +65,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           repository: deepseek-ai/deepseek-harness
-          ref: dsh-v0.1.0-rc.7
+          ref: dsh-v0.2.0-rc.2
           path: harness
       - uses: pnpm/action-setup@v4
         with:
@@ -81,6 +81,27 @@ jobs:
           mkdir -p plugins
           rm -rf plugins/dsh-swarm-panel
           ln -s "$GITHUB_WORKSPACE/dsh-swarm-plugin" plugins/dsh-swarm-panel
+          # Harness 0.2.0 dropped two things this standalone checkout needs:
+          #   * the plugins/* workspace glob, so the mounted plugin joins the
+          #     workspace at all (its development dependencies use workspace:*);
+          #   * linkWorkspacePackages: true, without which the plugin's public
+          #     peer/dependency ranges resolve duplicate REGISTRY copies instead
+          #     of linking the workspace packages, breaking branded-symbol
+          #     identity in tsc and duplicating service singletons at runtime.
+          node --input-type=commonjs <<'NODE'
+          const fs = require('node:fs')
+          const file = 'pnpm-workspace.yaml'
+          let text = fs.readFileSync(file, 'utf8')
+          if (!/^\s*-\s*['"]?plugins\/\*['"]?\s*$/m.test(text)) {
+            if (!/^packages:\s*$/m.test(text)) throw new Error('pnpm-workspace.yaml has no packages: block')
+            text = text.replace(/^packages:\s*$/m, "packages:\n  - 'plugins/*'")
+          }
+          if (!/^linkWorkspacePackages:/m.test(text)) {
+            text = text.replace(/^overrides:\s*$/m, "linkWorkspacePackages: true\n\noverrides:")
+            if (!/^linkWorkspacePackages:/m.test(text)) text += "\nlinkWorkspacePackages: true\n"
+          }
+          fs.writeFileSync(file, text)
+          NODE
       - name: Install Harness dependencies
         working-directory: harness
         # The checked-out plugin is the CI subject, so its public peer/dependency

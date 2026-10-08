@@ -1395,7 +1395,7 @@ window.__ModuleLoader__.load({
 		//#endregion
 		//#region src/client/index.ts
 		/** Required services: header-slot contribution and child-session navigation. */
-		const inject = ["sessions", "slots"];
+		const inject = ["uiWorkspace", "slots"];
 		/**
 		* Client plugin body: register the header action.
 		* @param ctx - client root context.
@@ -1403,9 +1403,8 @@ window.__ModuleLoader__.load({
 		*/
 		function apply(ctx, config = {}) {
 			if (config.enabled === false) return;
-			const sessions = ctx.sessions;
 			const actions = () => ({ onOpenSession: (childId) => {
-				sessions.open(childId);
+				ctx.uiWorkspace.openSession(childId);
 			} });
 			ctx.slots.inject("conversation.session.header.actions", () => ctx.slots.register({
 				name: "conversation.session.header.actions",

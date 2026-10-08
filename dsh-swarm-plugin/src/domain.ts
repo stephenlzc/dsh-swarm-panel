@@ -21,7 +21,7 @@ import type {
  * Fold every `swarm/*` session event into the current {@link SwarmState}.
  *
  * @param swarmId     - identity of the swarm (events for other swarms are ignored).
- * @param events      - the orchestrator session's full event log (`session.events`).
+ * @param events      - the orchestrator session's full event log (`session.snapshotEvents()`).
  * @param liveTopology - the runtime's in-memory topology (persisted events take precedence).
  * @param memoryLimit - view cap for `memories` (latest N entries); omitted means unbounded.
  *   A VIEW crop, not log truncation: the log only grows, so the fold stays
@@ -172,7 +172,7 @@ export function foldSwarmEvents(
 
 /**
  * Collect every swarm id ever created in one session log, in creation order.
- * @param events - the orchestrator session's full event log (`session.events`).
+ * @param events - the orchestrator session's full event log (`session.snapshotEvents()`).
  * @returns distinct swarm ids from `swarm/created` events.
  */
 export function collectSwarmIds(events: readonly SessionEvent[]): SwarmId[] {

@@ -14,11 +14,12 @@ import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
-import { CallId } from '@deepseek-ai/dsh-llm'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import * as LlmDeepSeek from '@deepseek-ai/dsh-llm-deepseek'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
-import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+// 0.2.0: continuable children require the session query service.
+import SessionQueryEngine from '@deepseek-ai/dsh-session-query'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import * as SubagentSpawn from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import { UserQuestionService } from '@deepseek-ai/dsh-user-questions'
@@ -41,8 +42,8 @@ async function harness(root: string): Promise<Context> {
   await mountAgentLoopTestDependencies(ctx)
   await ctx.plugin(LlmDeepSeek)
   await ctx.plugin(JsonlSessionPersistence, { root })
+  await ctx.plugin(SessionQueryEngine)
   await ctx.plugin(AgentLoop, { agents: [] })
-  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SubagentRuntime)
   await ctx.plugin(SubagentSpawn, { providerName: 'spawn' })
   await ctx.plugin(UserQuestionService)
@@ -53,7 +54,7 @@ async function harness(root: string): Promise<Context> {
 function executeTool(ctx: Context, agent: Agent, name: string, args: Record<string, unknown>, callId: string) {
   return ctx.tools.execute({
     signal: new AbortController().signal,
-    callId: CallId(callId),
+    callId: ToolCallId(callId),
     name,
     arguments: args,
     agent,
@@ -125,7 +126,7 @@ describe.skipIf(!process.env.DEEPSEEK_API_KEY)('swarm cold resume (real API)', (
 
     // Both child sessions survived on disk: each role comes back as `resumed`
     // (history intact) under its ORIGINAL child session id — none respawned.
-    const resumedEvent = handle.agent.session.events.find(event => event.type === 'swarm/resumed')
+    const resumedEvent = handle.agent.session.snapshotEvents().find(event => event.type === 'swarm/resumed')
     expect(resumedEvent).toBeDefined()
     if (resumedEvent?.type !== 'swarm/resumed') throw new Error('missing swarm/resumed')
     expect(resumedEvent.data.roles.map(role => [role.roleName, role.action])).toEqual([

@@ -9,9 +9,18 @@
  * @module dsh-swarm-panel/client
  */
 
-import type { ClientContext, SessionId } from '@deepseek-ai/dsh-client-runtime/client'
+// The client plugin context is the plain Cordis Context (0.2.0 removed the
+// former @deepseek-ai/dsh-client-runtime package that used to re-export it).
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 // Type-only: pulls the ui-conversation SlotMap merge (the header.actions entry).
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+// Type-only: merges `Context.slots`/`uiRenderer` onto the client Context.
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+// Type-only: merges the session standard props (`sessionId`, `useProjection`).
+import type {} from '@deepseek-ai/dsh-client-ui-session/client'
+// Type-only: merges the `uiWorkspace` navigation service onto the client Context.
+import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 // Type-only: the `swarm` SessionProjectionMap key merge (the domain's pure outlet).
 import type {} from '../panel-model.ts'
 import { SwarmAction, SwarmConversationView, type SwarmPanelActions } from './SwarmAction.ts'
@@ -20,7 +29,7 @@ export { SwarmAction, SwarmConversationView, SwarmPanelView } from './SwarmActio
 export type { SwarmActionProps, SwarmConversationViewProps, SwarmPanelActions, SwarmPanelViewProps } from './SwarmAction.ts'
 
 /** Required services: header-slot contribution and child-session navigation. */
-export const inject = ['sessions', 'slots'] as const
+export const inject = ['uiWorkspace', 'slots'] as const
 
 /**
  * Client-side configuration (deployment choices, changeable from cordis.yml).
@@ -43,10 +52,10 @@ export interface ClientConfig {
 export function apply(ctx: ClientContext, config: ClientConfig = {}): void {
   // Master switch: skip every slot registration when explicitly disabled.
   if (config.enabled === false) return
-  const sessions = ctx.sessions
   const actions = (): SwarmPanelActions => ({
     // The brand is compile-time only; the wire id arrives as a string.
-    onOpenSession: (childId) => { sessions.open(childId as SessionId) },
+    // 0.2.0 navigation goes through the ui-workspace service.
+    onOpenSession: (childId) => { ctx.uiWorkspace.openSession(childId as SessionId) },
   })
   ctx.slots.inject(
     'conversation.session.header.actions',

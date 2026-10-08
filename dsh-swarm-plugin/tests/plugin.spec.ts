@@ -6,10 +6,9 @@ import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
-import { CallId, MessageId } from '@deepseek-ai/dsh-llm'
+import { MessageId, ToolCallId } from '@deepseek-ai/dsh-llm'
 import { KNOWN_SESSION_EVENT_TYPES, SessionId } from '@deepseek-ai/dsh-session'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
-import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import * as SubagentSpawn from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import { UserQuestionService } from '@deepseek-ai/dsh-user-questions'
@@ -32,7 +31,6 @@ async function harness(): Promise<Context> {
   roots.push(root)
   await ctx.plugin(JsonlSessionPersistence, { root })
   await ctx.plugin(AgentLoop, { agents: [] })
-  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SubagentRuntime)
   await ctx.plugin(SubagentSpawn, { providerName: 'spawn' })
   await ctx.plugin(UserQuestionService)
@@ -64,8 +62,10 @@ describe('Agent Swarm plugin composition', () => {
     expect(ctx.tools.get('swarm_terminate', root.agent)?.name).toBe('swarm_terminate')
     expect(ctx.tools.get('swarm_spawn')).toBeUndefined()
 
-    const child = await root.agent.ctx.agents.create({ sessionId: SessionId('swarm-child') })
-    expect(ctx.agents.roots()).toEqual([existing.agent, root.agent])
+    // 0.2.0 requires the explicit `parentAgent`; the calling context no longer
+    // implies ownership, so a plain create() is a root by definition.
+    const child = await root.agent.ctx.agents.create({ sessionId: SessionId('swarm-child'), parentAgent: root.agent })
+    expect(ctx.agents.roots().map(agent => agent.id)).toEqual(['swarm-existing', 'swarm-root'])
     expect(ctx.tools.get('swarm_spawn', child.agent)).toBeUndefined()
 
     const departing = await ctx.agents.create({ sessionId: SessionId('swarm-departing') })
@@ -99,7 +99,7 @@ describe('Agent Swarm plugin composition', () => {
 
     const created = await ctx.tools.execute({
       signal: new AbortController().signal,
-      callId: CallId('swarm-spawn-test'),
+      callId: ToolCallId('swarm-spawn-test'),
       name: 'swarm_spawn',
       arguments: { swarmId: 'test-swarm', roleName: 'reviewer', systemPrompt: 'You are a reviewer.' },
       agent: root.agent,
@@ -111,7 +111,7 @@ describe('Agent Swarm plugin composition', () => {
     expect(started).toHaveBeenCalledOnce()
 
     // Verify session events were appended (swarm/created + swarm/role-spawned).
-    const events = root.agent.session.events
+    const events = root.agent.session.snapshotEvents()
     expect(events.some(e => e.type === 'swarm/created')).toBe(true)
     expect(events.some(e => e.type === 'swarm/role-spawned')).toBe(true)
 
@@ -127,7 +127,7 @@ describe('Agent Swarm plugin composition', () => {
 
     const created = await ctx.tools.execute({
       signal: new AbortController().signal,
-      callId: CallId('swarm-invalid-role'),
+      callId: ToolCallId('swarm-invalid-role'),
       name: 'swarm_spawn',
       arguments: { swarmId: 'test-swarm', roleName: '  ', systemPrompt: 'x' },
       agent: root.agent,
@@ -148,7 +148,7 @@ describe('Agent Swarm plugin composition', () => {
 
     const listEmpty = await ctx.tools.execute({
       signal: new AbortController().signal,
-      callId: CallId('swarm-list-empty'),
+      callId: ToolCallId('swarm-list-empty'),
       name: 'swarm_list_children',
       arguments: { swarmId: 'empty-swarm' },
       agent: root.agent,
@@ -173,7 +173,7 @@ describe('Agent Swarm plugin composition', () => {
     })
     await ctx.tools.execute({
       signal: new AbortController().signal,
-      callId: CallId('swarm-spawn'),
+      callId: ToolCallId('swarm-spawn'),
       name: 'swarm_spawn',
       arguments: { swarmId: 'term-swarm', roleName: 'worker' },
       agent: root.agent,
@@ -181,7 +181,7 @@ describe('Agent Swarm plugin composition', () => {
 
     const setTopo = await ctx.tools.execute({
       signal: new AbortController().signal,
-      callId: CallId('swarm-set-topo'),
+      callId: ToolCallId('swarm-set-topo'),
       name: 'swarm_set_topology',
       arguments: { swarmId: 'term-swarm', mode: 'peer' },
       agent: root.agent,
@@ -190,14 +190,14 @@ describe('Agent Swarm plugin composition', () => {
 
     const term = await ctx.tools.execute({
       signal: new AbortController().signal,
-      callId: CallId('swarm-term'),
+      callId: ToolCallId('swarm-term'),
       name: 'swarm_terminate',
       arguments: { swarmId: 'term-swarm' },
       agent: root.agent,
     })
     expect((term.value as { ok: boolean }).ok).toBe(true)
 
-    const events = root.agent.session.events
+    const events = root.agent.session.snapshotEvents()
     expect(events.some(e => e.type === 'swarm/topology-changed')).toBe(true)
     expect(events.some(e => e.type === 'swarm/destroyed')).toBe(true)
 
@@ -219,7 +219,7 @@ describe('Agent Swarm plugin composition', () => {
     // Spawn in root's namespace — succeeds.
     const spawnOk = await ctx.tools.execute({
       signal: new AbortController().signal,
-      callId: CallId('swarm-auth-ok'),
+      callId: ToolCallId('swarm-auth-ok'),
       name: 'swarm_spawn',
       arguments: { swarmId: 'auth-swarm', roleName: 'role1' },
       agent: root.agent,
@@ -230,7 +230,7 @@ describe('Agent Swarm plugin composition', () => {
     // otherRoot does not see root's roles — its list reports not_found.
     const listOther = await ctx.tools.execute({
       signal: new AbortController().signal,
-      callId: CallId('swarm-auth-other-list'),
+      callId: ToolCallId('swarm-auth-other-list'),
       name: 'swarm_list_children',
       arguments: { swarmId: 'auth-swarm' },
       agent: otherRoot.agent,

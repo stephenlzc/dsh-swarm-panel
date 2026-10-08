@@ -26,7 +26,7 @@ import { registerSwarmTools } from './tools.ts'
 import type { CheckpointFrequency, HumanInputMode, SpeakerSelection } from './types.ts'
 
 export { SwarmId } from './types.ts'
-export { SwarmRuntime, type ChatDefaults, type HitlAskResult, type HitlOption, type MemoryDefaults, type RoleModel, type SwarmRuntimeConfig } from './runtime.ts'
+export { RoleTurnError, SwarmRuntime, type ChatDefaults, type HitlAskResult, type HitlOption, type MemoryDefaults, type RoleModel, type SwarmRuntimeConfig } from './runtime.ts'
 export { registerSwarmTools } from './tools.ts'
 export { hydrateSwarmRuntimes, reactivateSwarmRoles } from './resume.ts'
 export { EngineError, runChatTurns, type ChatRunOutcome, type NextTurnOptions } from './engine.ts'
@@ -121,6 +121,20 @@ export interface Config {
   chat?: ChatConfig
   /** Memory view bounds. Defaults to `{ maxEntries: 200, queryLimit: 5 }`. */
   memory?: MemoryConfig
+  /**
+   * Upper bound for one group-chat turn's reply wait, in milliseconds.
+   * Defaults to 300000 (5 minutes). A turn that exceeds it ends the chat with
+   * `turn-timeout` instead of leaving the tool call pending forever.
+   */
+  turnTimeoutMs?: number
+  /**
+   * Session-readability rescue switch. `enabled: false` normally removes the
+   * event vocabulary too, which makes every previously written `swarm/*`
+   * session unreadable (audit G4-02: the platform offers no `ignorable` write
+   * path for out-of-repo events). Setting this `true` keeps the vocabulary
+   * registered while every other contribution stays disabled.
+   */
+  keepEventVocabularyWhenDisabled?: boolean
 }
 
 const CHECKPOINT_FREQUENCIES: readonly CheckpointFrequency[] = ['auto', 'manual', 'per_turn']
@@ -195,13 +209,27 @@ function resolveMemoryDefaults(config: Config): MemoryDefaults {
   }
 }
 
+/** Validate the configured turn timeout at load, failing loud on misconfiguration. */
+function resolveTurnTimeout(config: Config): number {
+  const value = config.turnTimeoutMs ?? 300000
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`dsh-swarm-panel: turnTimeoutMs must be a positive integer; got ${JSON.stringify(config.turnTimeoutMs)}`)
+  }
+  return value
+}
+
 /**
- * Every `swarm/*` session event type this plugin appends. The persistence read
- * path refuses a log containing types outside `KNOWN_SESSION_EVENT_TYPES`, and
- * an out-of-repo plugin is absent from that generated catalog by construction,
- * so the plugin registers its own vocabulary for exactly its lifetime.
- * Registration is an effect: unloading the plugin removes the types again,
- * after which a swarm session correctly reads as written-by-a-newer-harness.
+ * Every `swarm/*` session event type this plugin appends.
+ *
+ * The persistence read path refuses an unknown event type unless the stored
+ * envelope carries `ignorable: true`, and Harness 0.2.0 rejects event-name
+ * registration as its compatibility mechanism while `Session.append` exposes
+ * no way for an out-of-repo plugin to write that marker (audit G4-02). The set
+ * mutation below is therefore a process-local mitigation, not the supported
+ * contract: it keeps swarm sessions readable exactly while this plugin is
+ * loaded, so loading the plugin is a hard prerequisite for opening them.
+ * Registration is an effect and is reference counted (audit G4-10) so two live
+ * instances do not clobber each other.
  */
 const SWARM_EVENT_TYPES: readonly string[] = [
   'swarm/created',
@@ -221,6 +249,12 @@ const SWARM_EVENT_TYPES: readonly string[] = [
 ]
 
 /**
+ * Live registrations of {@link registerSwarmEventTypes}. The vocabulary is a
+ * process-global set, so the last disposer removes it (audit G4-10).
+ */
+let eventVocabularyRefs = 0
+
+/**
  * Register this plugin's event vocabulary with the session persistence read
  * path until the returned disposer runs. `KNOWN_SESSION_EVENT_TYPES` is typed
  * `ReadonlySet` because first-party packages never mutate it; the cast is the
@@ -228,8 +262,14 @@ const SWARM_EVENT_TYPES: readonly string[] = [
  */
 function registerSwarmEventTypes(): () => void {
   const known = KNOWN_SESSION_EVENT_TYPES as Set<string>
-  for (const type of SWARM_EVENT_TYPES) known.add(type)
+  if (eventVocabularyRefs === 0) {
+    for (const type of SWARM_EVENT_TYPES) known.add(type)
+  }
+  eventVocabularyRefs += 1
   return () => {
+    eventVocabularyRefs -= 1
+    if (eventVocabularyRefs > 0) return
+    eventVocabularyRefs = 0
     for (const type of SWARM_EVENT_TYPES) known.delete(type)
   }
 }
@@ -281,7 +321,9 @@ const swarmPanelModelSchema = zod.union([
       maxRounds: zod.number().int().positive().optional(),
       terminationMessage: zod.string().optional(),
       active: zod.boolean(),
-      startedAt: zod.string(),
+      // Optional on purpose (audit G4-13): a historical/foreign writer may omit
+      // it, and a hard restore failure is worse than a missing label.
+      startedAt: zod.string().optional(),
       endReason: zod.string().optional(),
     }).optional(),
     latestCheckpointAt: zod.string().optional(),
@@ -298,8 +340,16 @@ const swarmPanelModelSchema = zod.union([
 export function apply(ctx: Context, config: Config = {}): void {
   // Master switch: when explicitly disabled, leave the runtime untouched — no
   // projection, no event vocabulary, no per-agent effect or tool registration.
-  if (config.enabled === false) return
+  if (config.enabled === false) {
+    // Every other contribution stays disabled; the vocabulary alone may stay
+    // registered so existing swarm sessions remain loadable (audit G4-02).
+    if (config.keepEventVocabularyWhenDisabled === true) {
+      ctx.effect(() => registerSwarmEventTypes(), 'dsh-swarm-panel.event-vocabulary()')
+    }
+    return
+  }
   const provider = config.provider ?? 'spawn'
+  const turnTimeoutMs = resolveTurnTimeout(config)
   const checkpointFrequency = resolveCheckpointFrequency(config)
   const humanInputMode = resolveHumanInputMode(config)
   const chatDefaults = resolveChatDefaults(config)
@@ -314,10 +364,13 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.inject(['sessionProjections'], (projectionCtx) => {
     projectionCtx.sessionProjections.register<'swarm', SwarmPanelModel>({
       key: 'swarm',
-      schema: swarmPanelModelSchema,
+      // Host fold state schema: validates persisted state before it seeds a fold.
+      stateSchema: swarmPanelModelSchema,
       init: () => null,
       apply: applySwarmPanelEvent,
-      view: state => state,
+      // Client view: the fold state is already the wire value, so both schemas
+      // are the same shape and `view` is the identity.
+      wire: { viewSchema: swarmPanelModelSchema, view: state => state },
       stateVersion: 2,
     })
   })
@@ -341,6 +394,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         humanInputMode,
         chat: chatDefaults,
         memory: memoryDefaults,
+        turnTimeoutMs,
         ...(defaultModel !== undefined && (defaultModel.provider !== undefined || defaultModel.model !== undefined)
           ? { defaultModel: {
               ...(defaultModel.provider !== undefined ? { provider: defaultModel.provider } : {}),
@@ -385,6 +439,13 @@ export function apply(ctx: Context, config: Config = {}): void {
           }
         })
 
+        // NOTE (audit G4-07, deliberately not wired): the host's
+        // `subagent-settled` notice marks the end of ONE activation, not the end
+        // of the role — the same durable child is still addressable and can be
+        // woken by a followup. Retiring the role on that notice broke the chat
+        // engine outright (the speaker roster emptied after the spawn turn), so
+        // the notice is not consumed here. `SwarmRuntime.markChildSettled`
+        // remains available for a host that reports a terminal child end.
         return async () => {
           stopStatus()
           resumeController?.abort()

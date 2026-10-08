@@ -11,6 +11,9 @@
  */
 
 import type { SessionEvent } from '@deepseek-ai/dsh-session/types'
+// Import for the `swarm` SessionProjectionMap / SessionProjectionStateMap key
+// merge: an augmentation target must be resolvable inside the client program.
+import type {} from '@deepseek-ai/dsh-session-projection/types'
 import type { TopologyMode } from './types.ts'
 
 // ─── Wire model ──────────────────────────────────────────────────────────────
@@ -127,6 +130,10 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
      */
     swarm: SwarmPanelModel
   }
+  interface SessionProjectionStateMap {
+    /** The same whole-value panel model: the fold state IS the wire value. */
+    swarm: SwarmPanelModel
+  }
 }
 
 // ─── Incremental reducer ─────────────────────────────────────────────────────
@@ -183,6 +190,12 @@ function recomputeFlowAttribution(
     return { ...message, attribution }
   })
   return changed ? next : flow
+}
+
+/** Append one entry to a windowed list, dropping the oldest past the window. */
+function appendWindow<T>(entries: readonly T[], entry: T): readonly T[] {
+  const next = [...entries, entry]
+  return next.length <= FLOW_WINDOW ? next : next.slice(-FLOW_WINDOW)
 }
 
 /** Append one flow message, dropping the oldest when the window is full. */
@@ -267,8 +280,10 @@ function reduceSwarm(swarm: SwarmPanelSwarm, event: SessionEvent): SwarmPanelSwa
           sentAt,
           attribution: messageAttribution(swarm.roles, senderSessionId),
         }),
+        // Windowed like `flow` (audit G4-12.4): an unbounded transcript grows
+        // the projection wire payload for the whole session lifetime.
         transcript: to === 'group'
-          ? [...swarm.transcript, { from, to, content, sentAt }]
+          ? appendWindow(swarm.transcript, { from, to, content, sentAt })
           : swarm.transcript,
       }
     }
@@ -285,7 +300,16 @@ function reduceSwarm(swarm: SwarmPanelSwarm, event: SessionEvent): SwarmPanelSwa
 
     case 'swarm/destroyed': {
       const data = event.data as { reason: string }
-      return { ...swarm, terminated: true, destroyReason: data.reason }
+      // A terminated swarm has no running chat: leaving `active: true` rendered
+      // "terminated … chat running" (audit G4-12.3).
+      return {
+        ...swarm,
+        terminated: true,
+        destroyReason: data.reason,
+        ...(swarm.chat === undefined
+          ? {}
+          : { chat: { ...swarm.chat, active: false, endReason: swarm.chat.endReason ?? 'swarm-terminated' } }),
+      }
     }
 
     case 'swarm/checkpoint': {
@@ -314,14 +338,14 @@ function reduceSwarm(swarm: SwarmPanelSwarm, event: SessionEvent): SwarmPanelSwa
 
     case 'swarm/hitl-requested': {
       const data = event.data as { requestId: string; question: string; requestedAt: string }
-      return {
-        ...swarm,
-        pendingHitl: [...swarm.pendingHitl, {
-          requestId: data.requestId,
-          question: data.question,
-          requestedAt: data.requestedAt,
-        }],
-      }
+      const entry = { requestId: data.requestId, question: data.question, requestedAt: data.requestedAt }
+      // Upsert by request id: the fold (domain.ts) de-duplicates, so a repeated
+      // request must not render twice (audit G4-12.1).
+      const duplicate = swarm.pendingHitl.findIndex(pending => pending.requestId === data.requestId)
+      if (duplicate < 0) return { ...swarm, pendingHitl: [...swarm.pendingHitl, entry] }
+      const pendingHitl = [...swarm.pendingHitl]
+      pendingHitl[duplicate] = entry
+      return { ...swarm, pendingHitl }
     }
 
     case 'swarm/hitl-resolved': {
@@ -348,7 +372,8 @@ function reduceSwarm(swarm: SwarmPanelSwarm, event: SessionEvent): SwarmPanelSwa
           topic: data.topic,
           speakerSelection: data.speakerSelection,
           active: true,
-          startedAt: data.startedAt,
+          // Tolerate a historical writer that omitted it (audit G4-13).
+          startedAt: asString(data.startedAt),
           ...(data.maxTurns !== undefined ? { maxTurns: data.maxTurns } : {}),
           ...(data.maxRounds !== undefined ? { maxRounds: data.maxRounds } : {}),
           ...(data.terminationMessage !== undefined ? { terminationMessage: data.terminationMessage } : {}),

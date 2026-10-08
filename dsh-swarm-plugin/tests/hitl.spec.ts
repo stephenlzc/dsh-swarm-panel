@@ -14,12 +14,12 @@ import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
-import { CallId, MessageId } from '@deepseek-ai/dsh-llm'
+import { MessageId, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
-import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
+import { deliverSubagentPrompt, type HostPromptDeliverer } from '@deepseek-ai/dsh-subagent/internal'
 import * as SubagentSpawn from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import { UserQuestionService } from '@deepseek-ai/dsh-user-questions'
 import type { AskUserQuestionAnswer, AskUserQuestionRequest } from '@deepseek-ai/dsh-user-questions'
@@ -41,7 +41,6 @@ async function harness(root: string, config?: agentSwarm.Config): Promise<Contex
   await mountAgentLoopTestDependencies(ctx)
   await ctx.plugin(JsonlSessionPersistence, { root })
   await ctx.plugin(AgentLoop, { agents: [] })
-  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SubagentRuntime)
   await ctx.plugin(SubagentSpawn, { providerName: 'spawn' })
   await ctx.plugin(UserQuestionService)
@@ -74,8 +73,8 @@ interface FollowupCall {
 /** Record every followup delivery; all child ids accept. */
 function mockFollowup(ctx: Context): FollowupCall[] {
   const calls: FollowupCall[] = []
-  vi.spyOn(ctx.subagents, 'followup').mockImplementation(
-    (_parent: Agent, childId: SessionId, content: ContentBlock[], _options: { source: MessageSource; signal: AbortSignal }) => {
+  vi.spyOn(ctx.subagents as unknown as HostPromptDeliverer, deliverSubagentPrompt).mockImplementation(
+    (_parent: Agent, childId: SessionId, content: ContentBlock[], _source: MessageSource, _signal: AbortSignal) => {
       const text = content[0]?.type === 'text' ? content[0].text : ''
       calls.push({ childId, text })
       return Promise.resolve(MessageId(`accepted-${calls.length}`))
@@ -87,7 +86,7 @@ function mockFollowup(ctx: Context): FollowupCall[] {
 function executeTool(ctx: Context, agent: Agent, name: string, args: Record<string, unknown>, callId: string) {
   return ctx.tools.execute({
     signal: new AbortController().signal,
-    callId: CallId(callId),
+    callId: ToolCallId(callId),
     name,
     arguments: args,
     agent,
@@ -107,7 +106,8 @@ function stubOperator(
   ask: (request: AskUserQuestionRequest) => Promise<AskUserQuestionAnswer>,
 ): ReturnType<typeof vi.fn> {
   const spy = vi.fn(ask)
-  ctx.userQuestions.registerProvider({ ask: spy })
+  // 0.2.0: answerers register on the `user-questions/request` waterfall.
+  ctx.on('user-questions/request', request => spy(request))
   return spy
 }
 
@@ -138,9 +138,9 @@ describe('swarm_ask_user', () => {
     }, 'ask-1')
     await vi.waitFor(() => {
       expect(spy).toHaveBeenCalledOnce()
-      expect(root_.agent.session.events.some(event => event.type === 'swarm/hitl-requested')).toBe(true)
+      expect(root_.agent.session.snapshotEvents().some(event => event.type === 'swarm/hitl-requested')).toBe(true)
     })
-    expect(root_.agent.session.events.some(event => event.type === 'swarm/hitl-resolved')).toBe(false)
+    expect(root_.agent.session.snapshotEvents().some(event => event.type === 'swarm/hitl-resolved')).toBe(false)
 
     operator.resolve({ answers: [{ id: 'hitl-1', selected: [], custom: 'ship it' }] })
     const result = await pending
@@ -152,14 +152,14 @@ describe('swarm_ask_user', () => {
 
     // The answer was routed as a message attributed to the human.
     expect(deliveries.at(-1)).toEqual({ childId: 'child-reviewer', text: 'ship it' })
-    const routed = root_.agent.session.events
+    const routed = root_.agent.session.snapshotEvents()
       .filter(event => event.type === 'swarm/role-message')
       .map(event => event.data as { from: string; to: string; content: string; senderSessionId: string })
     expect(routed).toHaveLength(1)
     expect(routed[0]).toMatchObject({ from: 'human', to: 'reviewer', content: 'ship it', senderSessionId: 'swarm-hitl-root' })
 
     // The settle was logged.
-    const resolved = root_.agent.session.events
+    const resolved = root_.agent.session.snapshotEvents()
       .filter(event => event.type === 'swarm/hitl-resolved')
       .map(event => event.data as { requestId: string; outcome: string; answer?: string })
     expect(resolved).toHaveLength(1)
@@ -195,7 +195,7 @@ describe('swarm_ask_user', () => {
     if (result.isError) throw new Error('expected swarm_ask_user error value')
     expect((result.value as { code: string }).code).toBe('unavailable')
     expect(spy).not.toHaveBeenCalled()
-    expect(root_.agent.session.events.some(event => event.type.startsWith('swarm/hitl-'))).toBe(false)
+    expect(root_.agent.session.snapshotEvents().some(event => event.type.startsWith('swarm/hitl-'))).toBe(false)
   })
 
   it('rejects an unknown humanInputMode at load', async () => {
@@ -224,13 +224,13 @@ describe('swarm_ask_user', () => {
     await executeTool(ctx, root_.agent, 'swarm_spawn', { swarmId: 's', roleName: 'worker' }, 'spawn')
     const pending = executeTool(ctx, root_.agent, 'swarm_ask_user', { swarmId: 's', question: 'hold on?' }, 'ask')
     await vi.waitFor(() => {
-      expect(root_.agent.session.events.some(event => event.type === 'swarm/hitl-requested')).toBe(true)
+      expect(root_.agent.session.snapshotEvents().some(event => event.type === 'swarm/hitl-requested')).toBe(true)
     })
 
     // Role interrupts are role-level: the swarm-level ask stays pending.
     await executeTool(ctx, root_.agent, 'swarm_interrupt', { swarmId: 's' }, 'interrupt')
     await new Promise(resolve => setTimeout(resolve, 10))
-    expect(root_.agent.session.events.some(event => event.type === 'swarm/hitl-resolved')).toBe(false)
+    expect(root_.agent.session.snapshotEvents().some(event => event.type === 'swarm/hitl-resolved')).toBe(false)
 
     // Termination cancels the wait and the cancellation is logged.
     await executeTool(ctx, root_.agent, 'swarm_terminate', { swarmId: 's' }, 'terminate')
@@ -239,12 +239,12 @@ describe('swarm_ask_user', () => {
     expect(result.value).toMatchObject({ requestId: 'hitl-1', outcome: 'cancelled' })
     expect(result.value).not.toHaveProperty('answer')
 
-    const resolved = root_.agent.session.events
+    const resolved = root_.agent.session.snapshotEvents()
       .filter(event => event.type === 'swarm/hitl-resolved')
       .map(event => event.data as { requestId: string; outcome: string })
     expect(resolved).toHaveLength(1)
     expect(resolved[0]).toMatchObject({ requestId: 'hitl-1', outcome: 'cancelled' })
-    expect(root_.agent.session.events.some(event => event.type === 'swarm/destroyed')).toBe(true)
+    expect(root_.agent.session.snapshotEvents().some(event => event.type === 'swarm/destroyed')).toBe(true)
   })
 
   it('rebuilds the pending-HITL projection after a cold resume and re-asks with a fresh id', async () => {

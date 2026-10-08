@@ -78,10 +78,10 @@ Crea o abre una session, pide al Orchestrator que cree un swarm y abre la pesta√
 
 | Componente | Objetivo |
 | --- | --- |
-| DeepSeek Harness | `0.1.0-rc.7` workspace API y versiones compatibles |
+| DeepSeek Harness | `0.2.0-rc.2` workspace API y versiones compatibles |
 | Node.js | `22.19+` o Node `24+` |
 | Browser | DeepSeek Harness `web` profile |
-| Package | `dsh-swarm-panel@0.1.0` |
+| Package | `dsh-swarm-panel@0.2.0` |
 
 ## Estado de verificaci√≥n
 

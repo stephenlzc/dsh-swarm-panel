@@ -99,26 +99,33 @@ The example asks one Orchestrator to spawn planner, security, and correctness ro
 
 | Component | Release target |
 | --- | --- |
-| DeepSeek Harness | `0.1.0-rc.7` workspace API and compatible releases |
+| DeepSeek Harness | `0.2.0-rc.2` workspace API and compatible releases |
 | Node.js | `22.19+` or Node `24+` |
 | Browser | DeepSeek Harness `web` profile |
-| Package | `dsh-swarm-panel@0.1.0` |
+| Package | `dsh-swarm-panel@0.2.0` |
 
-The package currently targets the Harness `0.1.x` release line. Keep the plugin and Harness versions aligned when upgrading.
+The package targets the Harness `0.2.x` release line (`0.2.0-rc.2` desktop/web runtime). Keep the plugin and Harness versions aligned when upgrading; the marketplace/Harness desktop `1.0` label currently ships the `0.2.0-rc.2` runtime.
 
 ## Verification status
 
-The current release candidate has been checked with:
+### Harness `0.2.0-rc.2` upgrade checks
 
-- 84 keyless plugin tests passed; the key-gated real-API cold-resume test also passed (1 test).
-- Host-composed browser E2E passed in the real web shell.
-- TypeScript host and client checks passed.
-- Manual in-app browser interaction covered details, route and Agent filters, search empty state, Clear filters, Live pause/resume, Human input, child-session navigation, keyboard coexistence, and a 390×844 viewport.
-- `npm pack --dry-run` contains the built runtime, declarations, client bundle, patch, README, license, and canonical screenshot.
-- The final tarball installed successfully through `dsh plugin add` into temporary compatible `tarball`, `web`, and `headless` profiles; the web profile booted the Harness shell with the package installed.
+This release line has been checked against the published Harness `0.2.0-rc.2` packages — the runtime shipped by the current desktop app:
+
+- TypeScript host and client checks passed (`tsc --noEmit` and the client project check) with zero errors.
+- 93 keyless plugin tests passed (unit, projection, checkpoint/cold-resume fixtures, client rendering, lifecycle-robustness regressions, and a real-`AgentLoop` group-chat integration run); the two skipped tests are the key-gated real-API cold-resume and the intentionally deferred G4-07 assertion.
+- `tsdown` produced the publishable host and client bundles; both were smoke-loaded against the 0.2.0 runtime — the host bundle exposes the Loader-safe `name`/`inject`/`apply` shape and the client bundle registers both slots and routes child-session navigation through `uiWorkspace.openSession`.
+- The host-composed browser E2E (`tests/host/conversation-flow.e2e.ts`) passed in the real web shell against a Harness checkout at tag `dsh-v0.2.0-rc.2`. The test itself needed four compatibility fixes — the moved fixture path, scaffold profile package wiring, the v4 fixture envelope, and the authenticated shell URL — all recorded in the [compatibility note](docs/harness-0.2-compatibility.md#31-浏览器-host-e2etests-hostconversation-flowe2ets).
+
+See [docs/harness-0.2-compatibility.md](docs/harness-0.2-compatibility.md) for the complete breakage/repair list, the reinstall guidance, and the remaining upstream risks.
+
+### Earlier (`0.1.0-rc.7`) release evidence
+
+- Host-composed browser E2E passed in the real web shell; manual in-app browser interaction covered details, route and Agent filters, search empty state, Clear filters, Live pause/resume, Human input, child-session navigation, keyboard coexistence, and a 390×844 viewport.
+- `npm pack --dry-run` contains the built runtime, declarations, client bundle, patch, README, license, and canonical screenshot; the final tarball installed through `dsh plugin add` into temporary compatible `tarball`, `web`, and `headless` profiles.
 - The repository includes a redacted, deterministic UI tour GIF and a fresh in-app-browser audit set under `docs/screenshots/`.
 
-The keyless browser fixture proves UI and host composition, while the separate cold-resume run proves the live runtime path. npm publication and a tagged GitHub release are still maintainer actions; the current repository is the download source until those are authorized.
+That evidence is version-specific and needs repeating for a `0.2.0` release. npm publication and a tagged GitHub release are still maintainer actions; the current repository is the download source until those are authorized.
 
 ## Scope and known limitations
 

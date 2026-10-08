@@ -70,12 +70,30 @@ exports[`swarm cold resume > rebuilds runtimes and replays history into re-spawn
   },
   {
     "data": {
+      "childId": "child-alpha",
+      "outcome": "interrupted",
+      "roleName": "alpha",
+      "swarmId": "chat",
+    },
+    "type": "swarm/role-exited",
+  },
+  {
+    "data": {
       "childId": "child-alpha-2",
       "roleName": "alpha",
       "swarmId": "chat",
       "systemPrompt": "You are alpha.",
     },
     "type": "swarm/role-spawned",
+  },
+  {
+    "data": {
+      "childId": "child-beta",
+      "outcome": "interrupted",
+      "roleName": "beta",
+      "swarmId": "chat",
+    },
+    "type": "swarm/role-exited",
   },
   {
     "data": {

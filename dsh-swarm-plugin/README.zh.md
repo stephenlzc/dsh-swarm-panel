@@ -212,11 +212,11 @@ config:
 
 宿主组装 session projection 能力（`ctx.sessionProjections`）时，插件会注册一个 `swarm` 投影单元，把每个 `swarm/*` 事件增量 fold 成会话级面板模型（`Record<swarmId, SwarmPanelSwarm> | null`）：角色名册与拓扑模式、每条已路由 `swarm/role-message` 及其父子/兄弟归因、群聊 transcript、待答 HITL 请求、上下文变量、群聊引擎状态，以及最新检查点/恢复标记。fold 是增量的——无关事件返回同一状态引用，因此变更推送只会在面板值真正变化时触发。
 
-浏览器端以 `dsh-swarm-panel/client` 导出（经 package.json 的 `dsh.client` 声明发现）：一个 Conversation Flow 的 `conversation.view` 页签，外加头部的 swarm 计数徽章——无 RPC、无客户端 store，也不发起新的模型请求。该页签始终列在 Chat 和 Trajectory 旁边；徽章在会话还没有任何 swarm 时隐藏。Auto-scroll / Live 只控制视口跟随。空状态覆盖无 swarm、等待投影、projection 错误、无消息、无匹配、已终止和 pending HITL。每个角色泳道可打开该角色的子会话（`ctx.sessions.open`）；打开持久化的子会话会在宿主侧触发冷启动恢复，这就是面板触发恢复的方式。
+浏览器端以 `dsh-swarm-panel/client` 导出（经 package.json 的 `dsh.client` 声明发现）：一个 Conversation Flow 的 `conversation.view` 页签，外加头部的 swarm 计数徽章——无 RPC、无客户端 store，也不发起新的模型请求。该页签始终列在 Chat 和 Trajectory 旁边；徽章在会话还没有任何 swarm 时隐藏。Auto-scroll / Live 只控制视口跟随。空状态覆盖无 swarm、等待投影、projection 错误、无消息、无匹配、已终止和 pending HITL。每个角色泳道可打开该角色的子会话（`ctx.uiWorkspace.openSession`）；打开持久化的子会话会在宿主侧触发冷启动恢复，这就是面板触发恢复的方式。
 
 ## 兼容性与开发
 
-当前包面向 DeepSeek Harness `0.1.x` 发布线，以及 Node.js `22.19+` 或 `24+`。运行时消费者通过 Harness profile 安装已发布包；源码级类型检查和测试需要匹配的 Harness 工作区，只有开发依赖使用 `workspace:*`。
+当前包面向 DeepSeek Harness `0.2.x` 发布线（`0.2.0-rc.2` 及兼容版本——即当前桌面版内置的运行时），以及 Node.js `22.19+` 或 `24+`。运行时消费者通过 Harness profile 安装已发布包；源码级类型检查和测试需要匹配 tag `dsh-v0.2.0-rc.2` 的 Harness 工作区，只有开发依赖使用 `workspace:*`。该工作区必须在 `pnpm-workspace.yaml` 的 `packages:` 下声明 `plugins/*`（0.2.0 不再自带该 glob）。
 
 在匹配的 Harness 工作区中运行：
 

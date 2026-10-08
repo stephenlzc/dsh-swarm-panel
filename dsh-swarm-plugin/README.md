@@ -198,7 +198,7 @@ config:
 Every swarm fact lives in the orchestrator's durable session log, so a swarm survives a host restart. When a session is resumed (`ctx.agents.resume`), the plugin:
 
 1. Rebuilds each `SwarmRuntime` synchronously from the event fold — role map, topology, termination.
-2. Re-establishes every running role in the background: a role whose durable child session survived is cold-resumed through `followup()` with its history intact; a role whose child session was lost is re-spawned from its recorded definition and its inbound `swarm/role-message` history is replayed in order.
+2. Re-establishes every running role in the background: a role whose durable child session survived is cold-resumed through the host subagent relay with its history intact; a role whose child session was lost is re-spawned from its recorded definition and its inbound `swarm/role-message` history is replayed in order.
 3. Appends one `swarm/resumed` fact naming the latest checkpoint and each role's outcome (`resumed` / `respawned`).
 
 Checkpoints are markers over the log — resume always re-folds the complete log. Save them with the `swarm_checkpoint` tool, or automatically per the configured cadence:
@@ -220,7 +220,7 @@ config:
 
 When the host composes the session-projection seam (`ctx.sessionProjections`), the plugin registers a `swarm` projection unit that folds every `swarm/*` event into a per-session panel model (`Record<swarmId, SwarmPanelSwarm> | null`): roster and topology mode, every routed `swarm/role-message` with per-message parent/peer attribution, the group transcript, pending HITL requests, context variables, chat engine state, and the latest checkpoint/resume markers. The fold is incremental — unrelated events return the same state reference, so the change feed fires only when the panel value actually moves.
 
-The browser half ships as `dsh-swarm-panel/client` (discovered through the package.json `dsh.client` declaration): a Conversation Flow `conversation.view` tab plus a header swarm-count badge — no RPC, no client-side store, and no new model request. The tab is always listed next to Chat and Trajectory; the badge stays hidden until the session has at least one swarm. Auto-scroll / Live only follows the viewport. Empty copy covers no swarm, waiting projection, projection error, no messages, no matches, terminated, and pending HITL. Each role lane opens the role's child session (`ctx.sessions.open`); opening a persisted child cold-resumes it host-side, which is how the panel triggers recovery.
+The browser half ships as `dsh-swarm-panel/client` (discovered through the package.json `dsh.client` declaration): a Conversation Flow `conversation.view` tab plus a header swarm-count badge — no RPC, no client-side store, and no new model request. The tab is always listed next to Chat and Trajectory; the badge stays hidden until the session has at least one swarm. Auto-scroll / Live only follows the viewport. Empty copy covers no swarm, waiting projection, projection error, no messages, no matches, terminated, and pending HITL. Each role lane opens the role's child session (`ctx.uiWorkspace.openSession`); opening a persisted child cold-resumes it host-side, which is how the panel triggers recovery.
 
 ## Known Limitations / Roadmap
 
@@ -232,7 +232,7 @@ The browser half ships as `dsh-swarm-panel/client` (discovered through the packa
 
 ## Compatibility and development
 
-The current package targets the DeepSeek Harness `0.1.x` release line and Node.js `22.19+` or `24+`. Runtime consumers install the published package through the Harness profile; source-level typecheck and tests require a matching Harness workspace because only development dependencies use `workspace:*` packages. Runtime peer ranges in `package.json` resolve to the public Harness packages.
+The current package targets the DeepSeek Harness `0.2.x` release line (`0.2.0-rc.2` and compatible releases — the runtime shipped by the current desktop app) and Node.js `22.19+` or `24+`. Runtime consumers install the published package through the Harness profile; source-level typecheck and tests require a matching Harness workspace at tag `dsh-v0.2.0-rc.2` because only development dependencies use `workspace:*` packages. That workspace must list `plugins/*` under `packages:` in `pnpm-workspace.yaml` (0.2.0 no longer ships that glob). Runtime peer ranges in `package.json` resolve to the public Harness packages.
 
 From the plugin directory in a matching Harness workspace:
 

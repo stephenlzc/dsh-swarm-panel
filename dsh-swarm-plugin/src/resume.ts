@@ -7,7 +7,7 @@
  * restores each runtime's role map, topology, and termination from the fold, so
  * tools never observe a missing runtime. {@link reactivateSwarmRoles} then
  * re-establishes every running role in the background: a role whose durable
- * child session survives is cold-resumed through `followup()` with its history
+ * child session survives is cold-resumed through host relay with its history
  * intact, while a role whose child session was lost is re-spawned from its
  * recorded definition and its inbound `swarm/role-message` history is replayed.
  * Each reactivated swarm appends one `swarm/resumed` fact naming the recovery
@@ -20,6 +20,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 // Type-only: merges `subagents` onto Context.
 import type {} from '@deepseek-ai/dsh-subagent'
+import { SubagentError } from '@deepseek-ai/dsh-subagent'
 import type { RoleResumeRecord, RoleState, SwarmId } from './types.ts'
 import {
   collectSwarmIds,
@@ -28,6 +29,21 @@ import {
   latestCheckpointAt,
 } from './domain.ts'
 import { SwarmRuntime, type SwarmRuntimeConfig } from './runtime.ts'
+
+/**
+ * Whether one delivery failure proves the durable child session is gone.
+ *
+ * The host raises `NOT_RESUMABLE` ("subagent … is unavailable") when it cannot
+ * load the persisted child, which is the only condition that justifies
+ * re-spawning. Anything else — a transient relay/lock failure, a closing
+ * activation, an authorization rejection — must NOT spawn a duplicate child
+ * (audit G4-09).
+ * @param error - the rejected delivery.
+ * @returns true when the child session no longer exists.
+ */
+function isChildGoneError(error: unknown): boolean {
+  return error instanceof SubagentError && error.code === 'NOT_RESUMABLE'
+}
 
 /** Render the recovery notice delivered to a cold-resumed child. */
 function renderResumeNotice(swarmId: SwarmId, roleName: string, fromCheckpoint: string | undefined): string {
@@ -74,10 +90,10 @@ export function hydrateSwarmRuntimes(
   config: SwarmRuntimeConfig,
 ): SwarmId[] {
   const pending: SwarmId[] = []
-  for (const swarmId of collectSwarmIds(agent.session.events)) {
+  for (const swarmId of collectSwarmIds(agent.session.snapshotEvents())) {
     if (runtimes.has(swarmId as string)) continue
     const runtime = new SwarmRuntime(rootCtx, agent, swarmId, config)
-    const state = foldSwarmEvents(swarmId, agent.session.events, 'parent-child')
+    const state = foldSwarmEvents(swarmId, agent.session.snapshotEvents(), 'parent-child')
     runtime.hydrate(state)
     runtimes.set(swarmId as string, runtime)
     if (!state.terminated && [...state.roles.values()].some(role => role.status === 'running')) {
@@ -89,7 +105,7 @@ export function hydrateSwarmRuntimes(
 
 /**
  * Re-establish one running role after a restart. The preferred path delivers
- * a resume notice through `followup()`, which cold-resumes the durable child
+ * a resume notice through host relay, which cold-resumes the durable child
  * session with its full history. When the child session is gone, the role is
  * re-spawned from its recorded definition and its inbound messages replayed.
  * @returns the role's resume record with its post-resume child id.
@@ -100,7 +116,7 @@ async function reactivateOneRole(
   role: RoleState,
   fromCheckpoint: string | undefined,
   signal: AbortSignal,
-): Promise<RoleResumeRecord> {
+): Promise<RoleResumeRecord | undefined> {
   try {
     await runtime.deliverUnlogged(
       role.roleName,
@@ -111,7 +127,15 @@ async function reactivateOneRole(
   } catch (error: unknown) {
     signal.throwIfAborted()
     if (runtime.isTerminated) throw error
-    // The durable child session is unavailable: fall through to re-spawn.
+    if (!isChildGoneError(error)) {
+      // Transient or authorization failure: keep the durable child and skip the
+      // role instead of replacing a live child with a duplicate (audit G4-09).
+      agent.ctx.logger.warn(
+        `dsh-swarm-panel: cold resume could not reach role "${role.roleName}" (${String(error)}); keeping its durable child`,
+      )
+      return undefined
+    }
+    // The durable child session is gone: fall through to re-spawn.
   }
 
   const newChildId = await runtime.spawnRole(
@@ -125,7 +149,7 @@ async function reactivateOneRole(
     renderRestoreFraming(runtime.swarmId, role.roleName),
     signal,
   )
-  for (const message of inboundMessages(runtime.swarmId, agent.session.events, role.roleName)) {
+  for (const message of inboundMessages(runtime.swarmId, agent.session.snapshotEvents(), role.roleName)) {
     signal.throwIfAborted()
     await runtime.deliverUnlogged(
       role.roleName,
@@ -149,16 +173,21 @@ export async function reactivateSwarmRoles(
   signal: AbortSignal,
 ): Promise<void> {
   const swarmId = runtime.swarmId
-  const state = foldSwarmEvents(swarmId, agent.session.events, runtime.currentTopology)
+  const state = foldSwarmEvents(swarmId, agent.session.snapshotEvents(), runtime.currentTopology)
   if (state.terminated) return
-  const fromCheckpoint = latestCheckpointAt(swarmId, agent.session.events)
+  const fromCheckpoint = latestCheckpointAt(swarmId, agent.session.snapshotEvents())
 
   const records: RoleResumeRecord[] = []
   for (const role of state.roles.values()) {
     if (role.status !== 'running' || runtime.isTerminated) continue
-    records.push(await reactivateOneRole(runtime, agent, role, fromCheckpoint, signal))
+    const record = await reactivateOneRole(runtime, agent, role, fromCheckpoint, signal)
+    if (record !== undefined) records.push(record)
   }
   if (records.length === 0) return
+  // A terminate that landed while roles were being re-established must not be
+  // followed by a "resumed" fact (audit G4-14): the fold would show a
+  // terminated swarm whose roles look alive again.
+  if (runtime.isTerminated || runtime.state().terminated) return
 
   agent.session.append('swarm/resumed', {
     swarmId,

@@ -8,7 +8,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { createElement as h } from 'react'
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import { SwarmAction, SwarmConversationView, SwarmPanelView, type SwarmActionProps } from '../src/client/SwarmAction.ts'
 import * as clientPlugin from '../src/client/index.ts'
 import {
@@ -521,7 +521,7 @@ describe('client plugin apply', () => {
     const injections: string[] = []
     const registrations: { options: Record<string, unknown>; component: unknown }[] = []
     const ctx = {
-      sessions: { open },
+      uiWorkspace: { openSession: open },
       slots: {
         inject(name: string, body: () => unknown): void {
           injections.push(name)
@@ -536,7 +536,7 @@ describe('client plugin apply', () => {
 
     clientPlugin.apply(ctx)
 
-    expect(clientPlugin.inject).toEqual(['sessions', 'slots'])
+    expect(clientPlugin.inject).toEqual(['uiWorkspace', 'slots'])
     expect(injections).toEqual(['conversation.session.header.actions', 'conversation.view'])
     expect(registrations).toHaveLength(2)
     expect(registrations[0]?.options).toMatchObject({
@@ -562,7 +562,7 @@ describe('client plugin apply', () => {
     const open = vi.fn()
     const injections: string[] = []
     const ctx = {
-      sessions: { open },
+      uiWorkspace: { openSession: open },
       slots: {
         inject(name: string, body: () => unknown): void {
           injections.push(name)
@@ -580,13 +580,13 @@ describe('client plugin apply', () => {
     // is never reached. The header swarm count and Conversation Flow tab both
     // stay absent from the chrome.
     expect(injections).toEqual([])
-    expect(clientPlugin.inject).toEqual(['sessions', 'slots'])
+    expect(clientPlugin.inject).toEqual(['uiWorkspace', 'slots'])
   })
 
   it('defaults to enabled on the client when the config is omitted', () => {
     const injections: string[] = []
     const ctx = {
-      sessions: { open: vi.fn() },
+      uiWorkspace: { openSession: vi.fn() },
       slots: {
         inject(name: string, body: () => unknown): void {
           injections.push(name)

@@ -78,10 +78,10 @@ session을 만들고 Orchestrator에게 swarm 생성을 요청한 뒤 Chat과 Tr
 
 | 구성 요소 | 대상 |
 | --- | --- |
-| DeepSeek Harness | `0.1.0-rc.7` workspace API 및 호환 릴리스 |
+| DeepSeek Harness | `0.2.0-rc.2` workspace API 및 호환 릴리스 |
 | Node.js | `22.19+` 또는 `24+` |
 | Browser | DeepSeek Harness `web` profile |
-| Package | `dsh-swarm-panel@0.1.0` |
+| Package | `dsh-swarm-panel@0.2.0` |
 
 ## 검증 상태
 

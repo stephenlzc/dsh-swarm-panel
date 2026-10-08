@@ -369,6 +369,19 @@ function notFound(swarmId: string): SwarmError {
   return { code: 'not_found', message: `swarm ${swarmId} not found.` }
 }
 
+/**
+ * Reject a mutating call on a terminated swarm with a tool-level code instead
+ * of the runtime's internal error (audit G4-04/G4-06): after `swarm_terminate`
+ * no tool may add roles, route messages, block on HITL, or write state.
+ * @param runtime - the swarm the call targets.
+ * @returns the error value, or undefined when the swarm still accepts changes.
+ */
+function terminatedError(runtime: SwarmRuntime): SwarmError | undefined {
+  return runtime.isTerminated
+    ? { code: 'invalid_argument', message: 'The swarm is terminated; no further changes are accepted.' }
+    : undefined
+}
+
 const SPEAKER_SELECTIONS: readonly string[] = ['round_robin', 'random', 'auto', 'manual']
 
 /** The validated effective chat configuration `swarm_start_chat` logs. */
@@ -488,6 +501,8 @@ export function registerSwarmTools(
         return { code: 'invalid_argument', message: 'roleName must be 1-64 chars without surrounding whitespace.' }
       }
       const runtime = runtimeFor(swarmIdStr)
+      const terminated = terminatedError(runtime)
+      if (terminated !== undefined) return terminated
       try {
         const childId = await runtime.spawnRole(
           args.roleName,
@@ -526,6 +541,8 @@ export function registerSwarmTools(
       if (!isOrchestrator(exec.agent)) return internalError('swarm_send_to requires the live orchestrator agent.')
       const runtime = runtimes.get(args.swarmId)
       if (!runtime) return notFound(args.swarmId)
+      const terminated = terminatedError(runtime)
+      if (terminated !== undefined) return terminated
       try {
         await runtime.sendMessage(
           args.from ?? 'orchestrator',
@@ -558,6 +575,8 @@ export function registerSwarmTools(
       if (!isOrchestrator(exec.agent)) return internalError('swarm_set_topology requires the live orchestrator agent.')
       const runtime = runtimes.get(args.swarmId)
       if (!runtime) return notFound(args.swarmId)
+      const terminated = terminatedError(runtime)
+      if (terminated !== undefined) return terminated
       runtime.setTopology(args.mode)
       return { ok: true }
     },
@@ -612,8 +631,14 @@ export function registerSwarmTools(
       if (!isOrchestrator(exec.agent)) return internalError('swarm_interrupt requires the live orchestrator agent.')
       const runtime = runtimes.get(args.swarmId)
       if (!runtime) return notFound(args.swarmId)
-      runtime.interrupt(args.roleName)
-      return { ok: true }
+      try {
+        // Exception-safe inside the runtime (audit G4-03): a rejected host
+        // interrupt still records the durable exit fact.
+        runtime.interrupt(args.roleName)
+        return { ok: true }
+      } catch (error) {
+        return internalError(error instanceof Error ? error.message : String(error))
+      }
     },
   })))
 
@@ -631,8 +656,12 @@ export function registerSwarmTools(
       if (!isOrchestrator(exec.agent)) return internalError('swarm_terminate requires the live orchestrator agent.')
       const runtime = runtimes.get(args.swarmId)
       if (!runtime) return notFound(args.swarmId)
-      runtime.terminate('orchestrator-terminated')
-      return { ok: true }
+      try {
+        runtime.terminate('orchestrator-terminated')
+        return { ok: true }
+      } catch (error) {
+        return internalError(error instanceof Error ? error.message : String(error))
+      }
     },
   })))
 
@@ -699,6 +728,8 @@ export function registerSwarmTools(
       }
       const runtime = runtimes.get(args.swarmId)
       if (!runtime) return notFound(args.swarmId)
+      const terminated = terminatedError(runtime)
+      if (terminated !== undefined) return terminated
       try {
         const result = await runtime.askUser(args.question, args.header, args.options, exec.signal)
         let routedTo: string | undefined
@@ -746,6 +777,8 @@ export function registerSwarmTools(
       if (!isOrchestrator(exec.agent)) return internalError('swarm_start_chat requires the live orchestrator agent.')
       const runtime = runtimes.get(args.swarmId)
       if (!runtime) return notFound(args.swarmId)
+      const terminated = terminatedError(runtime)
+      if (terminated !== undefined) return terminated
       const effective = resolveChatConfig(runtime.config.chat, args)
       if ('code' in effective) return effective
       try {
@@ -819,6 +852,8 @@ export function registerSwarmTools(
       if (!isOrchestrator(exec.agent)) return internalError('swarm_set_context requires the live orchestrator agent.')
       const runtime = runtimes.get(args.swarmId)
       if (!runtime) return notFound(args.swarmId)
+      const terminated = terminatedError(runtime)
+      if (terminated !== undefined) return terminated
       if (args.key.trim() !== args.key || args.key.length === 0) {
         return { code: 'invalid_argument', message: 'key must be non-empty without surrounding whitespace.' }
       }
@@ -868,6 +903,8 @@ export function registerSwarmTools(
       if (!isOrchestrator(exec.agent)) return internalError('swarm_memory_write requires the live orchestrator agent.')
       const runtime = runtimes.get(args.swarmId)
       if (!runtime) return notFound(args.swarmId)
+      const terminated = terminatedError(runtime)
+      if (terminated !== undefined) return terminated
       if (args.text.trim().length === 0) {
         return { code: 'invalid_argument', message: 'text must be non-empty.' }
       }

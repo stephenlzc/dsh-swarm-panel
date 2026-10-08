@@ -17,11 +17,12 @@ import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
-import { CallId } from '@deepseek-ai/dsh-llm'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, GenerateOptions } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
-import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+// 0.2.0: continuable children require the session query service.
+import SessionQueryEngine from '@deepseek-ai/dsh-session-query'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import * as SubagentSpawn from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import { UserQuestionService } from '@deepseek-ai/dsh-user-questions'
@@ -66,8 +67,8 @@ async function harness(root: string, adapter: MockAdapter, config?: agentSwarm.C
   await mountAgentLoopTestDependencies(ctx)
   ctx.llm.registerAdapter(['mock'], adapter)
   await ctx.plugin(JsonlSessionPersistence, { root })
+  await ctx.plugin(SessionQueryEngine)
   await ctx.plugin(AgentLoop, { agents: [] })
-  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SubagentRuntime)
   await ctx.plugin(SubagentSpawn, { providerName: 'spawn' })
   await ctx.plugin(UserQuestionService)
@@ -84,7 +85,7 @@ async function disposeContext(ctx: Context): Promise<void> {
 function executeTool(ctx: Context, agent: Agent, name: string, args: Record<string, unknown>, callId: string) {
   return ctx.tools.execute({
     signal: new AbortController().signal,
-    callId: CallId(callId),
+    callId: ToolCallId(callId),
     name,
     arguments: args,
     agent,
@@ -150,7 +151,7 @@ describe('group chat engine', () => {
     ])
     expect(outcome.ended).toBe(false)
 
-    const groupMessages = agent.session.events
+    const groupMessages = agent.session.snapshotEvents()
       .filter(event => event.type === 'swarm/role-message')
       .map(event => event.data as { from: string; to: string; content: string })
       .filter(message => message.to === 'group')
@@ -197,11 +198,9 @@ describe('group chat engine', () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-swarm-chat-manual-'))
     roots.push(root)
     const ctx = await harness(root, chatAdapter())
-    ctx.userQuestions.registerProvider({
-      ask: request => Promise.resolve({
-        answers: request.questions.map(question => ({ id: question.id, selected: ['gamma'] })),
-      } satisfies AskUserQuestionAnswer),
-    })
+    ctx.on('user-questions/request', request => Promise.resolve({
+      answers: request.questions.map(question => ({ id: question.id, selected: ['gamma'] })),
+    } satisfies AskUserQuestionAnswer))
     const agent = await spawnTrio(ctx, 'swarm-chat-root', 'chat')
 
     await executeTool(ctx, agent, 'swarm_start_chat', {
@@ -211,7 +210,7 @@ describe('group chat engine', () => {
     expect(outcome.turns).toEqual([{ speaker: 'gamma', reply: 'gamma speaks' }])
 
     // The operator question and its answer are durable facts.
-    const hitl = agent.session.events.filter(event => event.type.startsWith('swarm/hitl-'))
+    const hitl = agent.session.snapshotEvents().filter(event => event.type.startsWith('swarm/hitl-'))
     expect(hitl.map(event => event.type)).toEqual(['swarm/hitl-requested', 'swarm/hitl-resolved'])
   })
 
@@ -229,7 +228,7 @@ describe('group chat engine', () => {
     expect(outcome.ended).toBe(true)
     expect(outcome.endReason).toBe('max-round')
 
-    const ended = agent.session.events
+    const ended = agent.session.snapshotEvents()
       .filter(event => event.type === 'swarm/chat-ended')
       .map(event => event.data as { reason: string })
     expect(ended).toHaveLength(1)
@@ -259,7 +258,7 @@ describe('group chat engine', () => {
     const operator = vi.fn((request: { questions: Array<{ id: string }> }) => Promise.resolve<AskUserQuestionAnswer>({
       answers: request.questions.map(question => ({ id: question.id, selected: [operatorAnswer] })),
     }))
-    ctx.userQuestions.registerProvider({ ask: operator })
+    ctx.on('user-questions/request', request => operator(request))
     const agent = await spawnTrio(ctx, 'swarm-chat-root', 'chat')
 
     await executeTool(ctx, agent, 'swarm_start_chat', {
@@ -271,7 +270,7 @@ describe('group chat engine', () => {
     expect(outcome.turns).toHaveLength(3)
     expect(outcome.ended).toBe(false)
     expect(operator).toHaveBeenCalledOnce()
-    expect(agent.session.events.some(event => event.type === 'swarm/chat-ended')).toBe(false)
+    expect(agent.session.snapshotEvents().some(event => event.type === 'swarm/chat-ended')).toBe(false)
 
     // The condition is re-evaluated on the next call; now the operator stops the chat.
     operatorAnswer = 'Terminate'
@@ -280,7 +279,7 @@ describe('group chat engine', () => {
     expect(stop.ended).toBe(true)
     expect(stop.endReason).toBe('max-turns')
     expect(operator).toHaveBeenCalledTimes(2)
-    expect(agent.session.events.some(event => event.type === 'swarm/chat-ended')).toBe(true)
+    expect(agent.session.snapshotEvents().some(event => event.type === 'swarm/chat-ended')).toBe(true)
   })
 
   it('context variables: written by one role, read by another through the turn prompt', async () => {
@@ -301,7 +300,7 @@ describe('group chat engine', () => {
     const get = await executeTool(ctx, agent, 'swarm_get_context', { swarmId: 'chat', key: 'decision' }, 'get-ctx')
     if (get.isError) throw new Error('expected swarm_get_context value')
     expect(get.value).toEqual({ swarmId: 'chat', entries: [{ key: 'decision', value: 'use REST' }] })
-    expect(agent.session.events.some(event => event.type === 'swarm/context-updated')).toBe(true)
+    expect(agent.session.snapshotEvents().some(event => event.type === 'swarm/context-updated')).toBe(true)
 
     // beta's next turn prompt carries alpha's write.
     await nextTurns(ctx, agent, 'chat', {}, 'turn-2')
@@ -347,7 +346,7 @@ describe('group chat engine', () => {
     const after = await nextTurns(ctx, handle.agent, 'chat', {}, 'turn-after')
     expect(after.turns).toEqual([{ speaker: 'gamma', reply: 'gamma speaks' }])
 
-    const transcript = handle.agent.session.events
+    const transcript = handle.agent.session.snapshotEvents()
       .filter(event => event.type === 'swarm/role-message')
       .map(event => event.data as { from: string; to: string })
       .filter(message => message.to === 'group')

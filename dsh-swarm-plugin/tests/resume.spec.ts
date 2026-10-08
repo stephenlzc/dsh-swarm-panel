@@ -18,13 +18,13 @@ import { agentEvents } from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
-import { CallId, MessageId } from '@deepseek-ai/dsh-llm'
+import { MessageId, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
-import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
-import SubagentRuntime from '@deepseek-ai/dsh-subagent'
+import SubagentRuntime, { SubagentError } from '@deepseek-ai/dsh-subagent'
+import { deliverSubagentPrompt, type HostPromptDeliverer } from '@deepseek-ai/dsh-subagent/internal'
 import * as SubagentSpawn from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import { UserQuestionService } from '@deepseek-ai/dsh-user-questions'
 import * as agentSwarm from '../src/index.ts'
@@ -44,7 +44,6 @@ async function harness(root: string, config?: agentSwarm.Config): Promise<Contex
   await mountAgentLoopTestDependencies(ctx)
   await ctx.plugin(JsonlSessionPersistence, { root })
   await ctx.plugin(AgentLoop, { agents: [] })
-  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SubagentRuntime)
   await ctx.plugin(SubagentSpawn, { providerName: 'spawn' })
   await ctx.plugin(UserQuestionService)
@@ -66,11 +65,16 @@ interface FollowupCall {
 /** Record every followup delivery; `accept` decides which child ids receive theirs. */
 function mockFollowup(ctx: Context, accept: (childId: string) => boolean): FollowupCall[] {
   const calls: FollowupCall[] = []
-  vi.spyOn(ctx.subagents, 'followup').mockImplementation(
-    (_parent: Agent, childId: SessionId, content: ContentBlock[], _options: { source: MessageSource; signal: AbortSignal }) => {
+  vi.spyOn(ctx.subagents as unknown as HostPromptDeliverer, deliverSubagentPrompt).mockImplementation(
+    (_parent: Agent, childId: SessionId, content: ContentBlock[], _source: MessageSource, _signal: AbortSignal) => {
       const text = content[0]?.type === 'text' ? content[0].text : ''
       calls.push({ childId, text })
-      if (!accept(childId)) return Promise.reject(new Error(`subagent "${childId}" is unavailable`))
+      // Model the host exactly: a durable child that cannot be loaded is
+      // rejected with NOT_RESUMABLE — the only failure cold resume treats as
+      // proof the child is gone (audit G4-09).
+      if (!accept(childId)) {
+        return Promise.reject(new SubagentError(`subagent "${childId}" is unavailable`, 'NOT_RESUMABLE'))
+      }
       return Promise.resolve(MessageId(`accepted-${calls.length}`))
     },
   )
@@ -91,7 +95,7 @@ function mockSpawn(ctx: Context, childIds: readonly string[]): void {
 function executeTool(ctx: Context, agent: Agent, name: string, args: Record<string, unknown>, callId: string) {
   return ctx.tools.execute({
     signal: new AbortController().signal,
-    callId: CallId(callId),
+    callId: ToolCallId(callId),
     name,
     arguments: args,
     agent,
@@ -175,32 +179,32 @@ describe('swarm checkpoint cadence', () => {
 
     await executeTool(ctx, root_.agent, 'swarm_spawn', { swarmId: 's', roleName: 'worker' }, 'spawn')
     emitIdle(ctx, root_.agent)
-    let checkpoints = checkpointsOf(root_.agent.session.events)
+    let checkpoints = checkpointsOf(root_.agent.session.snapshotEvents())
     expect(checkpoints).toHaveLength(1)
     expect((checkpoints[0]!.data as { reason: string }).reason).toBe('auto')
 
     // No state change: a further idle boundary saves nothing.
     emitIdle(ctx, root_.agent)
-    expect(checkpointsOf(root_.agent.session.events)).toHaveLength(1)
+    expect(checkpointsOf(root_.agent.session.snapshotEvents())).toHaveLength(1)
 
     // Manual tool call pins a checkpoint with the folded counts.
     const manual = await executeTool(ctx, root_.agent, 'swarm_checkpoint', { swarmId: 's' }, 'manual')
     expect(manual.isError).toBe(false)
     if (manual.isError) throw new Error('expected swarm_checkpoint value')
     expect(manual.value).toMatchObject({ swarmId: 's', messageCount: 0, roleCount: 1 })
-    checkpoints = checkpointsOf(root_.agent.session.events)
+    checkpoints = checkpointsOf(root_.agent.session.snapshotEvents())
     expect(checkpoints).toHaveLength(2)
     expect((checkpoints[1]!.data as { reason: string }).reason).toBe('manual')
 
     // Message-only progress is not structural: 'auto' stays quiet at idle.
     await executeTool(ctx, root_.agent, 'swarm_send_to', { swarmId: 's', to: 'worker', content: 'hi' }, 'send')
     emitIdle(ctx, root_.agent)
-    expect(checkpointsOf(root_.agent.session.events)).toHaveLength(2)
+    expect(checkpointsOf(root_.agent.session.snapshotEvents())).toHaveLength(2)
 
     // A topology change is structural again.
     await executeTool(ctx, root_.agent, 'swarm_set_topology', { swarmId: 's', mode: 'peer' }, 'topo')
     emitIdle(ctx, root_.agent)
-    checkpoints = checkpointsOf(root_.agent.session.events)
+    checkpoints = checkpointsOf(root_.agent.session.snapshotEvents())
     expect(checkpoints).toHaveLength(3)
     const snapshot = checkpoints[2]!.data as { reason: string; topologyMode: string; messageCount: number; lastSpeaker: string }
     expect(snapshot).toMatchObject({ reason: 'auto', topologyMode: 'peer', messageCount: 1, lastSpeaker: 'orchestrator' })
@@ -219,7 +223,7 @@ describe('swarm checkpoint cadence', () => {
     await executeTool(ctx, root_.agent, 'swarm_send_to', { swarmId: 's', to: 'worker', content: 'hi' }, 'send')
     emitIdle(ctx, root_.agent)
 
-    const checkpoints = checkpointsOf(root_.agent.session.events)
+    const checkpoints = checkpointsOf(root_.agent.session.snapshotEvents())
     expect(checkpoints).toHaveLength(2)
     expect((checkpoints[1]!.data as { reason: string }).reason).toBe('per_turn')
 
@@ -231,7 +235,7 @@ describe('swarm checkpoint cadence', () => {
     mockFollowup(manualCtx, () => true)
     await executeTool(manualCtx, manualAgent.agent, 'swarm_spawn', { swarmId: 's', roleName: 'worker' }, 'spawn')
     emitIdle(manualCtx, manualAgent.agent)
-    expect(checkpointsOf(manualAgent.agent.session.events)).toHaveLength(0)
+    expect(checkpointsOf(manualAgent.agent.session.snapshotEvents())).toHaveLength(0)
   })
 
   it('rejects an unknown checkpoint frequency at load', async () => {
@@ -278,7 +282,7 @@ describe('swarm cold resume', () => {
     expect(deliveries[5]!.text).toBe('[restored message from "alpha"]\nhandoff')
 
     // The resumed fact names the recovery point and every role's outcome.
-    const resumedEvents = agent.session.events.filter(event => event.type === 'swarm/resumed')
+    const resumedEvents = agent.session.snapshotEvents().filter(event => event.type === 'swarm/resumed')
     expect(resumedEvents).toHaveLength(1)
     const resumedData = resumedEvents[0]!.data as {
       roles: Array<{ roleName: string; childId: string; action: string }>
@@ -311,7 +315,7 @@ describe('swarm cold resume', () => {
     expect(deliveries.at(-1)).toEqual({ childId: 'child-alpha-2', text: 'continue' })
 
     // Headless snapshot: the durable swarm trail on the resumed session.
-    expect(projectSwarmEvents(agent.session.events)).toMatchSnapshot()
+    expect(projectSwarmEvents(agent.session.snapshotEvents())).toMatchSnapshot()
   })
 
   it('cold-resumes surviving child sessions through followup without re-spawning', async () => {
@@ -331,7 +335,7 @@ describe('swarm cold resume', () => {
     expect(deliveries.map(call => call.childId)).toEqual(['child-alpha', 'child-beta'])
     expect(deliveries.every(call => call.text.includes('[SWARM RESUMED]'))).toBe(true)
 
-    const resumedData = agent.session.events
+    const resumedData = agent.session.snapshotEvents()
       .filter(event => event.type === 'swarm/resumed')
       .map(event => (event.data as { roles: Array<{ roleName: string; childId: string; action: string }> }).roles)
     expect(resumedData).toEqual([[
@@ -340,9 +344,9 @@ describe('swarm cold resume', () => {
     ]])
 
     // No duplicate spawns or replayed messages entered the durable log.
-    const spawnedEvents = agent.session.events.filter(event => event.type === 'swarm/role-spawned')
+    const spawnedEvents = agent.session.snapshotEvents().filter(event => event.type === 'swarm/role-spawned')
     expect(spawnedEvents).toHaveLength(2)
-    const messages = agent.session.events.filter(event => event.type === 'swarm/role-message')
+    const messages = agent.session.snapshotEvents().filter(event => event.type === 'swarm/role-message')
     expect(messages).toHaveLength(2)
 
     const list = await executeTool(ctx, agent, 'swarm_list_children', { swarmId: 'chat' }, 'list-kept')
@@ -378,7 +382,7 @@ describe('swarm cold resume', () => {
     // The runtime was hydrated but nothing was reactivated, and the model can
     // still inspect the terminated swarm.
     expect(followups).toHaveLength(0)
-    expect(handle.agent.session.events.some(event => event.type === 'swarm/resumed')).toBe(false)
+    expect(handle.agent.session.snapshotEvents().some(event => event.type === 'swarm/resumed')).toBe(false)
     const list = await executeTool(restarted, handle.agent, 'swarm_list_children', { swarmId: 'chat' }, 'list-terminated')
     if (list.isError) throw new Error('expected swarm_list_children value')
     expect((list.value as { roles: Array<{ status: string }> }).roles)

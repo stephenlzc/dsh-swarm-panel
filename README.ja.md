@@ -78,10 +78,10 @@ session を作成し、Orchestrator に swarm の作成を依頼して、Chat �
 
 | コンポーネント | 対象 |
 | --- | --- |
-| DeepSeek Harness | `0.1.0-rc.7` workspace API と互換リリース |
+| DeepSeek Harness | `0.2.0-rc.2` workspace API と互換リリース |
 | Node.js | `22.19+` または `24+` |
 | Browser | DeepSeek Harness `web` profile |
-| Package | `dsh-swarm-panel@0.1.0` |
+| Package | `dsh-swarm-panel@0.2.0` |
 
 ## 検証状況
 

@@ -80,10 +80,10 @@ dsh web
 
 | 组件 | 目标版本 |
 | --- | --- |
-| DeepSeek Harness | `0.1.0-rc.7` workspace API 及兼容版本 |
+| DeepSeek Harness | `0.2.0-rc.2` workspace API 及兼容版本 |
 | Node.js | `22.19+` 或 Node `24+` |
 | Browser | DeepSeek Harness `web` profile |
-| Package | `dsh-swarm-panel@0.1.0` |
+| Package | `dsh-swarm-panel@0.2.0` |
 
 ## 验证状态
 

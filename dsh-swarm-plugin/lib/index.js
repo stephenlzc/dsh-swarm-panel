@@ -1,5 +1,7 @@
 import { KNOWN_SESSION_EVENT_TYPES } from "@deepseek-ai/dsh-session";
 import { z } from "zod";
+import { SubagentError } from "@deepseek-ai/dsh-subagent";
+import { queueHostSubagentPrompt } from "@deepseek-ai/dsh-subagent/internal";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 /** Topology a swarm shows before its first `swarm/topology-changed` (the type default). */
 const DEFAULT_TOPOLOGY = "parent-child";
@@ -46,6 +48,11 @@ function recomputeFlowAttribution(flow, roles) {
 		};
 	});
 	return changed ? next : flow;
+}
+/** Append one entry to a windowed list, dropping the oldest past the window. */
+function appendWindow(entries, entry) {
+	const next = [...entries, entry];
+	return next.length <= 200 ? next : next.slice(-200);
 }
 /** Append one flow message, dropping the oldest when the window is full. */
 function appendFlow(flow, message) {
@@ -117,12 +124,12 @@ function reduceSwarm(swarm, event) {
 					sentAt,
 					attribution: messageAttribution(swarm.roles, senderSessionId)
 				}),
-				transcript: to === "group" ? [...swarm.transcript, {
+				transcript: to === "group" ? appendWindow(swarm.transcript, {
 					from,
 					to,
 					content,
 					sentAt
-				}] : swarm.transcript
+				}) : swarm.transcript
 			};
 		}
 		case "swarm/role-exited": {
@@ -143,7 +150,12 @@ function reduceSwarm(swarm, event) {
 			return {
 				...swarm,
 				terminated: true,
-				destroyReason: data.reason
+				destroyReason: data.reason,
+				...swarm.chat === void 0 ? {} : { chat: {
+					...swarm.chat,
+					active: false,
+					endReason: swarm.chat.endReason ?? "swarm-terminated"
+				} }
 			};
 		}
 		case "swarm/checkpoint": {
@@ -173,13 +185,21 @@ function reduceSwarm(swarm, event) {
 		}
 		case "swarm/hitl-requested": {
 			const data = event.data;
+			const entry = {
+				requestId: data.requestId,
+				question: data.question,
+				requestedAt: data.requestedAt
+			};
+			const duplicate = swarm.pendingHitl.findIndex((pending) => pending.requestId === data.requestId);
+			if (duplicate < 0) return {
+				...swarm,
+				pendingHitl: [...swarm.pendingHitl, entry]
+			};
+			const pendingHitl = [...swarm.pendingHitl];
+			pendingHitl[duplicate] = entry;
 			return {
 				...swarm,
-				pendingHitl: [...swarm.pendingHitl, {
-					requestId: data.requestId,
-					question: data.question,
-					requestedAt: data.requestedAt
-				}]
+				pendingHitl
 			};
 		}
 		case "swarm/hitl-resolved": {
@@ -198,7 +218,7 @@ function reduceSwarm(swarm, event) {
 					topic: data.topic,
 					speakerSelection: data.speakerSelection,
 					active: true,
-					startedAt: data.startedAt,
+					startedAt: asString(data.startedAt),
 					...data.maxTurns !== void 0 ? { maxTurns: data.maxTurns } : {},
 					...data.maxRounds !== void 0 ? { maxRounds: data.maxRounds } : {},
 					...data.terminationMessage !== void 0 ? { terminationMessage: data.terminationMessage } : {}
@@ -256,7 +276,7 @@ function applySwarmPanelEvent(state, event) {
 * Fold every `swarm/*` session event into the current {@link SwarmState}.
 *
 * @param swarmId     - identity of the swarm (events for other swarms are ignored).
-* @param events      - the orchestrator session's full event log (`session.events`).
+* @param events      - the orchestrator session's full event log (`session.snapshotEvents()`).
 * @param liveTopology - the runtime's in-memory topology (persisted events take precedence).
 * @param memoryLimit - view cap for `memories` (latest N entries); omitted means unbounded.
 *   A VIEW crop, not log truncation: the log only grows, so the fold stays
@@ -379,7 +399,7 @@ function foldSwarmEvents(swarmId, events, liveTopology, memoryLimit) {
 }
 /**
 * Collect every swarm id ever created in one session log, in creation order.
-* @param events - the orchestrator session's full event log (`session.events`).
+* @param events - the orchestrator session's full event log (`session.snapshotEvents()`).
 * @returns distinct swarm ids from `swarm/created` events.
 */
 function collectSwarmIds(events) {
@@ -465,6 +485,19 @@ function completedRounds(turnCount, activeRoles) {
 }
 //#endregion
 //#region src/runtime.ts
+/**
+* One engine turn stopped for a reason the engine should treat as a chat stop
+* condition rather than an internal failure: the speaker was interrupted
+* (`interrupted`) or never answered inside the turn timeout (`timeout`).
+*/
+var RoleTurnError = class extends Error {
+	reason;
+	constructor(message, reason) {
+		super(message);
+		this.reason = reason;
+		this.name = "RoleTurnError";
+	}
+};
 /** One process-local, disposable Swarm runtime attached to one orchestrator root agent. */
 var SwarmRuntime = class {
 	ctx;
@@ -475,6 +508,19 @@ var SwarmRuntime = class {
 	children = /* @__PURE__ */ new Map();
 	/** Live HITL waits, request id → cancellation. A pending wait is swarm-level: role interrupts do not touch it, terminate/dispose cancel it. */
 	pendingHitl = /* @__PURE__ */ new Map();
+	/**
+	* Per-role cancellation for the turn currently in flight. `interrupt` and
+	* settlement abort it so `swarm_next_turn` never waits forever on a child
+	* that will not answer.
+	*/
+	roleTurns = /* @__PURE__ */ new Map();
+	/** True while one `swarm_next_turn` call drives this swarm (explicit serialization). */
+	turnInFlight = false;
+	/** `hitl-<n>` / `mem-<n>` counters mirrored in memory; `hydrate` reseeds them from the log. */
+	hitlCount = 0;
+	memoryCount = 0;
+	/** Last fold, keyed by log length + topology + memory limit; the log only grows. */
+	foldCache;
 	topology = "parent-child";
 	terminated = false;
 	/** Structural state (roles, topology, termination) changed since the last checkpoint. */
@@ -496,6 +542,30 @@ var SwarmRuntime = class {
 		return this.terminated;
 	}
 	/**
+	* Reject a mutating entry point once the swarm is terminated. Guarantees the
+	* durable log never gains a `swarm/*` fact after `swarm/destroyed` (audit
+	* G4-04/G4-06): a terminated swarm must not spawn orphans or block on HITL.
+	* @param action - human-readable action for the error message.
+	*/
+	assertActive(action) {
+		if (this.terminated) throw new Error(`swarm: cannot ${action}; the swarm is terminated`);
+	}
+	/**
+	* Claim the single in-flight turn slot. The host scheduler already runs these
+	* tools exclusively, but the contract is made explicit here so a direct
+	* caller (another plugin, PTC nesting, tests) cannot interleave two engines.
+	* @returns true when the caller owns the slot until {@link endTurn}.
+	*/
+	beginTurn() {
+		if (this.turnInFlight) return false;
+		this.turnInFlight = true;
+		return true;
+	}
+	/** Release the turn slot claimed by {@link beginTurn}. */
+	endTurn() {
+		this.turnInFlight = false;
+	}
+	/**
 	* Restore this runtime's in-memory state from a folded event log. Used only
 	* by cold resume, immediately after construction, before any tool runs.
 	* @param state - the fold of this swarm's durable events.
@@ -505,6 +575,16 @@ var SwarmRuntime = class {
 		this.terminated = state.terminated;
 		this.children.clear();
 		for (const role of state.roles.values()) if (role.status === "running") this.children.set(role.roleName, role.childId);
+		let hitl = 0;
+		let memory = 0;
+		for (const event of this.agent.session.snapshotEvents()) {
+			if (event.data.swarmId !== this.swarmId) continue;
+			if (event.type === "swarm/hitl-requested") hitl += 1;
+			else if (event.type === "swarm/memory-written") memory += 1;
+		}
+		this.hitlCount = hitl;
+		this.memoryCount = memory;
+		this.foldCache = void 0;
 	}
 	/**
 	* Whether a checkpoint is due at the next idle boundary under `frequency`.
@@ -566,6 +646,7 @@ var SwarmRuntime = class {
 	* @returns the durable child session id.
 	*/
 	async spawnRole(roleName, systemPrompt, model, signal) {
+		this.assertActive("spawn a role");
 		const provider = this.config.provider;
 		const effectiveModel = model ?? this.config.defaultModel;
 		const prompt = [{
@@ -586,6 +667,7 @@ var SwarmRuntime = class {
 			},
 			signal
 		})).childId;
+		if (this.children.has(roleName)) this.interrupt(roleName);
 		this.children.set(roleName, childId);
 		this.structuralDirty = true;
 		const modelPayload = effectiveModel !== void 0 && (effectiveModel.provider !== void 0 || effectiveModel.model !== void 0) ? {
@@ -605,7 +687,7 @@ var SwarmRuntime = class {
 	* Route a message from one role (or the orchestrator) to another role.
 	*
 	* Attribution (`senderSessionId`) is computed exactly once and used for BOTH the
-	* `followup()` delivery and the logged `swarm/role-message` event, so the durable
+	* host-relay delivery and the logged `swarm/role-message` event, so the durable
 	* log and the perceived sender never diverge.
 	*
 	* @param from - role name, `orchestrator`, or `human` (operator answer routed by `swarm_ask_user`).
@@ -615,6 +697,7 @@ var SwarmRuntime = class {
 	* @param signal - caller cancellation owning the delivery until inbox acceptance.
 	*/
 	async sendMessage(from, to, content, attribution, signal) {
+		this.assertActive("send a message");
 		const toChildId = this.children.get(to);
 		if (toChildId === void 0) throw new Error(`swarm: unknown role ${to}`);
 		let senderSessionId;
@@ -628,14 +711,11 @@ var SwarmRuntime = class {
 			type: "text",
 			text: content
 		}];
-		await this.ctx.subagents.followup(this.agent, toChildId, message, {
-			source: {
-				kind: "coordinator",
-				form: "relay",
-				senderSessionId
-			},
-			signal
-		});
+		await queueHostSubagentPrompt(this.ctx.subagents, this.agent, toChildId, message, {
+			kind: "agent-message",
+			form: "relay",
+			senderSessionId
+		}, signal);
 		this.messagesDirty = true;
 		this.agent.session.append("swarm/role-message", {
 			swarmId: this.swarmId,
@@ -656,39 +736,53 @@ var SwarmRuntime = class {
 	* @param signal - caller cancellation owning the delivery until inbox acceptance.
 	*/
 	async deliverUnlogged(to, text, signal) {
+		this.assertActive("deliver a recovery message");
 		const toChildId = this.children.get(to);
 		if (toChildId === void 0) throw new Error(`swarm: unknown role ${to}`);
-		await this.ctx.subagents.followup(this.agent, toChildId, [{
+		await queueHostSubagentPrompt(this.ctx.subagents, this.agent, toChildId, [{
 			type: "text",
 			text
 		}], {
-			source: {
-				kind: "coordinator",
-				form: "relay",
-				senderSessionId: this.agent.session.id
-			},
-			signal
-		});
+			kind: "agent-message",
+			form: "relay",
+			senderSessionId: this.agent.session.id
+		}, signal);
 	}
 	/**
 	* Resolve which session id the recipient perceives as the sender.
-	* - `peer` attribution (or `peer` topology): the sending role itself.
-	* - otherwise (`parent-child` topology, or explicit `orchestrator`): the orchestrator.
+	* - explicit `orchestrator`: the orchestrator.
+	* - explicit `peer` in `mixed` topology, or `peer` topology: the sending role.
+	* - otherwise (`parent-child`): the orchestrator.
+	*
+	* An explicit `peer` override is ignored outside `mixed` (audit G4-12.5): the
+	* tool documents it as meaningful only there, and `parent-child` must stay
+	* the safe default.
 	*/
 	resolveSenderSessionId(fromChildId, attribution) {
-		if (attribution === "peer") return fromChildId;
 		if (attribution === "orchestrator") return this.agent.session.id;
+		if (attribution === "peer" && this.topology === "mixed") return fromChildId;
 		if (this.topology === "peer") return fromChildId;
 		return this.agent.session.id;
 	}
-	/** Interrupt one or all roles (fire-and-return). */
+	/**
+	* Interrupt one or all roles (fire-and-return).
+	*
+	* Every step is best-effort (audit G4-03): a rejected `subagents.interrupt`
+	* (for example `UNAUTHORIZED` after a child was resumed as its own root) must
+	* not skip the `swarm/role-exited` fact or leave the role in the active set.
+	* An in-flight turn for the role is aborted so the engine cannot wait forever.
+	*/
 	interrupt(roleName) {
 		const targets = roleName === void 0 ? [...this.children.entries()] : this.children.has(roleName) ? [[roleName, this.children.get(roleName)]] : [];
 		for (const [name, childId] of targets) {
-			this.ctx.subagents.interrupt(childId, {
-				kind: "ancestor",
-				agent: this.agent
-			});
+			this.roleTurns.get(name)?.abort(/* @__PURE__ */ new Error(`swarm: role ${JSON.stringify(name)} was interrupted`));
+			this.roleTurns.delete(name);
+			try {
+				this.ctx.subagents.interrupt(childId, {
+					kind: "ancestor",
+					agent: this.agent
+				});
+			} catch {}
 			this.structuralDirty = true;
 			this.agent.session.append("swarm/role-exited", {
 				swarmId: this.swarmId,
@@ -700,10 +794,19 @@ var SwarmRuntime = class {
 			this.children.delete(name);
 		}
 	}
-	/** Mark a role as settled without removing its durable child mapping. */
+	/**
+	* Mark a role as settled and drop its live child mapping. The durable
+	* `swarm/role-spawned` fact keeps the historical child id; the live map only
+	* tracks roles the swarm may still drive or interrupt.
+	* @param roleName - the role that ended.
+	* @param outcome - how it ended.
+	* @returns true when a running role was marked.
+	*/
 	markRoleSettled(roleName, outcome) {
 		const childId = this.children.get(roleName);
-		if (childId === void 0) return;
+		if (childId === void 0) return false;
+		this.roleTurns.get(roleName)?.abort(/* @__PURE__ */ new Error(`swarm: role ${JSON.stringify(roleName)} settled`));
+		this.roleTurns.delete(roleName);
 		this.structuralDirty = true;
 		this.agent.session.append("swarm/role-exited", {
 			swarmId: this.swarmId,
@@ -712,6 +815,24 @@ var SwarmRuntime = class {
 			outcome,
 			exitedAt: (/* @__PURE__ */ new Date()).toISOString()
 		});
+		this.children.delete(roleName);
+		return true;
+	}
+	/**
+	* Settle the role owning one child session after the host reported that the
+	* child finished. Without this the fold shows every role as running forever:
+	* `no-roles` is unreachable, the panel lies, and a cold resume re-wakes a
+	* finished child (audit G4-07).
+	* @param childId - the settled child's session id.
+	* @param outcome - how it ended.
+	* @returns true when a running role owned that child.
+	*/
+	markChildSettled(childId, outcome) {
+		for (const [roleName, mapped] of this.children) {
+			if (mapped !== childId) continue;
+			return this.markRoleSettled(roleName, outcome);
+		}
+		return false;
 	}
 	/**
 	* Ask the human operator one question and wait for the answer.
@@ -730,6 +851,7 @@ var SwarmRuntime = class {
 	* @returns how the wait settled, with the answer text when answered.
 	*/
 	async askUser(question, header, options, signal) {
+		this.assertActive("ask the operator");
 		const requestId = this.nextHitlRequestId();
 		this.agent.session.append("swarm/hitl-requested", {
 			swarmId: this.swarmId,
@@ -796,12 +918,8 @@ var SwarmRuntime = class {
 	}
 	/** The next HITL request id: `hitl-<n>` counting this swarm's prior requests, so ids survive cold resume without collision. */
 	nextHitlRequestId() {
-		let count = 0;
-		for (const event of this.agent.session.events) {
-			if (event.type !== "swarm/hitl-requested") continue;
-			if (event.data.swarmId === this.swarmId) count += 1;
-		}
-		return `hitl-${count + 1}`;
+		this.hitlCount += 1;
+		return `hitl-${this.hitlCount}`;
 	}
 	/**
 	* Start the group chat engine for this swarm. Throws when a chat is already
@@ -809,6 +927,7 @@ var SwarmRuntime = class {
 	* @param config - the effective chat configuration (tool args over deployment defaults).
 	*/
 	startChat(config) {
+		this.assertActive("start a chat");
 		const existing = this.state().chat;
 		if (existing?.active) throw new Error(`swarm: chat already active for topic ${JSON.stringify(existing.topic)}`);
 		this.structuralDirty = true;
@@ -834,6 +953,7 @@ var SwarmRuntime = class {
 	}
 	/** Write one context variable; `by` attributes the writer (`orchestrator`, `human`, or a role). */
 	setContext(key, value, by) {
+		this.assertActive("write context");
 		this.messagesDirty = true;
 		this.agent.session.append("swarm/context-updated", {
 			swarmId: this.swarmId,
@@ -850,7 +970,7 @@ var SwarmRuntime = class {
 	*/
 	recordGroupMessage(speaker, content) {
 		const childId = this.children.get(speaker);
-		if (childId === void 0) throw new Error(`swarm: unknown role ${speaker}`);
+		if (childId === void 0 || this.terminated) return false;
 		this.messagesDirty = true;
 		this.agent.session.append("swarm/role-message", {
 			swarmId: this.swarmId,
@@ -860,6 +980,7 @@ var SwarmRuntime = class {
 			content,
 			sentAt: (/* @__PURE__ */ new Date()).toISOString()
 		});
+		return true;
 	}
 	/**
 	* Run one engine turn: deliver the turn prompt to the speaker and await the
@@ -877,29 +998,53 @@ var SwarmRuntime = class {
 	* @returns the reply text.
 	*/
 	async runTurn(roleName, prompt, signal) {
+		this.assertActive("run a turn");
 		const childId = this.children.get(roleName);
 		if (childId === void 0) throw new Error(`swarm: unknown role ${roleName}`);
-		const messageId = await this.ctx.subagents.followup(this.agent, childId, [{
-			type: "text",
-			text: prompt
-		}], {
-			source: {
-				kind: "coordinator",
+		const roleController = new AbortController();
+		this.roleTurns.get(roleName)?.abort(/* @__PURE__ */ new Error(`swarm: role ${JSON.stringify(roleName)} started a new turn`));
+		this.roleTurns.set(roleName, roleController);
+		const onOuterAbort = () => {
+			roleController.abort(signal.reason);
+		};
+		if (signal.aborted) roleController.abort(signal.reason);
+		else signal.addEventListener("abort", onOuterAbort, { once: true });
+		const roleSignal = roleController.signal;
+		try {
+			const messageId = await queueHostSubagentPrompt(this.ctx.subagents, this.agent, childId, [{
+				type: "text",
+				text: prompt
+			}], {
+				kind: "agent-message",
 				form: "relay",
 				senderSessionId: this.agent.session.id
-			},
-			signal
-		});
-		const child = this.ctx.agents.get(childId);
-		if (child === void 0) return "";
-		return this.awaitChildReply(child, messageId, signal);
+			}, roleSignal);
+			const child = this.ctx.agents.get(childId);
+			if (child === void 0) return "";
+			return await this.awaitChildReply(child, messageId, roleSignal);
+		} catch (error) {
+			if (roleController.signal.aborted && !signal.aborted) throw new RoleTurnError(error instanceof Error ? error.message : String(error), "interrupted");
+			throw error;
+		} finally {
+			signal.removeEventListener("abort", onOuterAbort);
+			if (this.roleTurns.get(roleName) === roleController) this.roleTurns.delete(roleName);
+		}
 	}
-	/** Await the child's settled assistant reply to the user message `messageId`. */
+	/**
+	* Await the child's settled assistant reply to the user message `messageId`.
+	*
+	* "Not ready" is expressed as `undefined` and retried on the next event: the
+	* inbox accepts the delivery before its `user/message` is appended, so a miss
+	* must never fall back to scanning the whole log — doing that reported the
+	* PREVIOUS turn's reply as this one (audit G4-01). A timeout bounds the wait
+	* so an interrupted child cannot hang `swarm_next_turn` forever (G4-08).
+	*/
 	awaitChildReply(child, messageId, signal) {
+		const timeoutMs = this.config.turnTimeoutMs;
 		const evaluate = () => {
 			if (child.status !== "idle") return void 0;
-			const events = child.session.events;
-			let watermark = 0;
+			const events = child.session.snapshotEvents();
+			let watermark;
 			for (let index = events.length - 1; index >= 0; index--) {
 				const event = events[index];
 				if (event.type === "user/message" && event.data.id === messageId) {
@@ -907,6 +1052,7 @@ var SwarmRuntime = class {
 					break;
 				}
 			}
+			if (watermark === void 0) return void 0;
 			for (let index = events.length - 1; index > watermark; index--) {
 				const event = events[index];
 				if (event.type !== "assistant/message") continue;
@@ -923,7 +1069,9 @@ var SwarmRuntime = class {
 					resolve(reply);
 				}
 			};
+			let timer;
 			const cleanup = () => {
+				if (timer !== void 0) clearTimeout(timer);
 				stopSession();
 				stopStatus();
 				signal.removeEventListener("abort", onAbort);
@@ -937,28 +1085,65 @@ var SwarmRuntime = class {
 				reject(signal.reason instanceof Error ? signal.reason : /* @__PURE__ */ new Error("swarm: turn aborted"));
 			};
 			signal.addEventListener("abort", onAbort, { once: true });
+			if (signal.aborted) {
+				onAbort();
+				return;
+			}
+			timer = setTimeout(() => {
+				cleanup();
+				reject(new RoleTurnError(`swarm: the role did not reply within ${timeoutMs} ms`, "timeout"));
+			}, timeoutMs);
 		});
 	}
 	/** Cancel every live HITL wait; the awaiting `askUser` calls log the cancellations. */
 	cancelPendingHitl() {
 		for (const controller of this.pendingHitl.values()) controller.abort();
 	}
-	/** Terminate the swarm: cancel pending HITL waits, interrupt every child, and append `swarm/destroyed`. */
+	/**
+	* Terminate the swarm: mark it terminated and append `swarm/destroyed` FIRST,
+	* then cancel pending HITL waits and interrupt every child best-effort.
+	*
+	* The order matters (audit G4-03): a rejected `subagents.interrupt` can no
+	* longer leave the swarm un-terminated with live roles. A repeated call still
+	* cancels a late wait (audit G4-06).
+	* @param reason - why the swarm ended.
+	*/
 	terminate(reason) {
-		if (this.terminated) return;
-		this.cancelPendingHitl();
-		this.interrupt(void 0);
+		if (this.terminated) {
+			this.cancelPendingHitl();
+			return;
+		}
+		this.terminated = true;
 		this.structuralDirty = true;
 		this.agent.session.append("swarm/destroyed", {
 			swarmId: this.swarmId,
 			reason,
 			destroyedAt: (/* @__PURE__ */ new Date()).toISOString()
 		});
-		this.terminated = true;
+		this.cancelPendingHitl();
+		this.interrupt(void 0);
 	}
-	/** Build the current folded state from the session event log. */
+	/**
+	* Build the current folded state from the session event log.
+	*
+	* The fold is memoized on (log length, topology, memory limit): the log only
+	* grows, so repeated calls inside one tool invocation reuse the previous fold
+	* instead of rescanning every event (audit G4-11).
+	* @returns the folded state for this swarm.
+	*/
 	state() {
-		return foldSwarmEvents(this.swarmId, this.agent.session.events, this.topology, this.config.memory.maxEntries);
+		const events = this.agent.session.snapshotEvents();
+		const memoryLimit = this.config.memory.maxEntries;
+		const cached = this.foldCache;
+		if (cached !== void 0 && cached.length === events.length && cached.topology === this.topology && cached.memoryLimit === memoryLimit) return cached.state;
+		const state = foldSwarmEvents(this.swarmId, events, this.topology, memoryLimit);
+		this.foldCache = {
+			length: events.length,
+			topology: this.topology,
+			memoryLimit,
+			state
+		};
+		return state;
 	}
 	/**
 	* Write one memory entry and append its `swarm/memory-written` event. The id
@@ -970,7 +1155,9 @@ var SwarmRuntime = class {
 	* @returns the written entry's id (`mem-<n>`).
 	*/
 	writeMemory(text, by, tags) {
-		const id = `mem-${this.agent.session.events.filter((event) => event.type === "swarm/memory-written" && event.data.swarmId === this.swarmId).length + 1}`;
+		this.assertActive("write memory");
+		this.memoryCount += 1;
+		const id = `mem-${this.memoryCount}`;
 		this.messagesDirty = true;
 		this.agent.session.append("swarm/memory-written", {
 			swarmId: this.swarmId,
@@ -988,6 +1175,8 @@ var SwarmRuntime = class {
 	* own `swarm/hitl-resolved` when the owning session is still writable.
 	*/
 	dispose() {
+		for (const controller of this.roleTurns.values()) controller.abort(/* @__PURE__ */ new Error("swarm: the swarm was disposed"));
+		this.roleTurns.clear();
 		this.cancelPendingHitl();
 		if (this.terminated) return;
 		for (const [name, childId] of this.children) {
@@ -1004,6 +1193,20 @@ var SwarmRuntime = class {
 };
 //#endregion
 //#region src/resume.ts
+/**
+* Whether one delivery failure proves the durable child session is gone.
+*
+* The host raises `NOT_RESUMABLE` ("subagent … is unavailable") when it cannot
+* load the persisted child, which is the only condition that justifies
+* re-spawning. Anything else — a transient relay/lock failure, a closing
+* activation, an authorization rejection — must NOT spawn a duplicate child
+* (audit G4-09).
+* @param error - the rejected delivery.
+* @returns true when the child session no longer exists.
+*/
+function isChildGoneError(error) {
+	return error instanceof SubagentError && error.code === "NOT_RESUMABLE";
+}
 /** Render the recovery notice delivered to a cold-resumed child. */
 function renderResumeNotice(swarmId, roleName, fromCheckpoint) {
 	return [
@@ -1041,10 +1244,10 @@ function renderReplayedMessage(from, content) {
 */
 function hydrateSwarmRuntimes(rootCtx, agent, runtimes, config) {
 	const pending = [];
-	for (const swarmId of collectSwarmIds(agent.session.events)) {
+	for (const swarmId of collectSwarmIds(agent.session.snapshotEvents())) {
 		if (runtimes.has(swarmId)) continue;
 		const runtime = new SwarmRuntime(rootCtx, agent, swarmId, config);
-		const state = foldSwarmEvents(swarmId, agent.session.events, "parent-child");
+		const state = foldSwarmEvents(swarmId, agent.session.snapshotEvents(), "parent-child");
 		runtime.hydrate(state);
 		runtimes.set(swarmId, runtime);
 		if (!state.terminated && [...state.roles.values()].some((role) => role.status === "running")) pending.push(swarmId);
@@ -1053,7 +1256,7 @@ function hydrateSwarmRuntimes(rootCtx, agent, runtimes, config) {
 }
 /**
 * Re-establish one running role after a restart. The preferred path delivers
-* a resume notice through `followup()`, which cold-resumes the durable child
+* a resume notice through host relay, which cold-resumes the durable child
 * session with its full history. When the child session is gone, the role is
 * re-spawned from its recorded definition and its inbound messages replayed.
 * @returns the role's resume record with its post-resume child id.
@@ -1069,10 +1272,14 @@ async function reactivateOneRole(runtime, agent, role, fromCheckpoint, signal) {
 	} catch (error) {
 		signal.throwIfAborted();
 		if (runtime.isTerminated) throw error;
+		if (!isChildGoneError(error)) {
+			agent.ctx.logger.warn(`dsh-swarm-panel: cold resume could not reach role "${role.roleName}" (${String(error)}); keeping its durable child`);
+			return;
+		}
 	}
 	const newChildId = await runtime.spawnRole(role.roleName, role.systemPrompt, role.model, signal);
 	await runtime.deliverUnlogged(role.roleName, renderRestoreFraming(runtime.swarmId, role.roleName), signal);
-	for (const message of inboundMessages(runtime.swarmId, agent.session.events, role.roleName)) {
+	for (const message of inboundMessages(runtime.swarmId, agent.session.snapshotEvents(), role.roleName)) {
 		signal.throwIfAborted();
 		await runtime.deliverUnlogged(role.roleName, renderReplayedMessage(message.from, message.content), signal);
 	}
@@ -1091,15 +1298,17 @@ async function reactivateOneRole(runtime, agent, role, fromCheckpoint, signal) {
 */
 async function reactivateSwarmRoles(runtime, agent, signal) {
 	const swarmId = runtime.swarmId;
-	const state = foldSwarmEvents(swarmId, agent.session.events, runtime.currentTopology);
+	const state = foldSwarmEvents(swarmId, agent.session.snapshotEvents(), runtime.currentTopology);
 	if (state.terminated) return;
-	const fromCheckpoint = latestCheckpointAt(swarmId, agent.session.events);
+	const fromCheckpoint = latestCheckpointAt(swarmId, agent.session.snapshotEvents());
 	const records = [];
 	for (const role of state.roles.values()) {
 		if (role.status !== "running" || runtime.isTerminated) continue;
-		records.push(await reactivateOneRole(runtime, agent, role, fromCheckpoint, signal));
+		const record = await reactivateOneRole(runtime, agent, role, fromCheckpoint, signal);
+		if (record !== void 0) records.push(record);
 	}
 	if (records.length === 0) return;
+	if (runtime.isTerminated || runtime.state().terminated) return;
 	agent.session.append("swarm/resumed", {
 		swarmId,
 		roles: records,
@@ -1213,6 +1422,15 @@ async function confirmStop(runtime, question, signal) {
 * @returns the turns taken and whether the chat ended during this call.
 */
 async function runChatTurns(runtime, options, signal) {
+	if (!runtime.beginTurn()) throw new EngineError("swarm: another turn is already in flight for this swarm.", "unavailable");
+	try {
+		return await driveChatTurns(runtime, options, signal);
+	} finally {
+		runtime.endTurn();
+	}
+}
+/** The turn loop itself; the caller owns the runtime's turn slot. */
+async function driveChatTurns(runtime, options, signal) {
 	const records = [];
 	let ended = false;
 	let endReason;
@@ -1244,8 +1462,31 @@ async function runChatTurns(runtime, options, signal) {
 		const roundsBefore = completedRounds(chat.turnCount, activeRoles(state).length);
 		const speaker = await pickSpeaker(runtime, state, chat, options.speaker, signal);
 		const prompt = buildTurnPrompt(chat, state.context, speaker, runtime.config.chat.transcriptWindow);
-		const reply = await runtime.runTurn(speaker, prompt, signal);
-		runtime.recordGroupMessage(speaker, reply);
+		let reply;
+		try {
+			reply = await runtime.runTurn(speaker, prompt, signal);
+		} catch (error) {
+			if (runtime.isTerminated) {
+				runtime.endChat("swarm-terminated");
+				ended = true;
+				endReason = "swarm-terminated";
+				break;
+			}
+			if (error instanceof RoleTurnError) {
+				const reason = error.reason === "timeout" ? "turn-timeout" : "role-interrupted";
+				runtime.endChat(reason);
+				ended = true;
+				endReason = reason;
+				break;
+			}
+			throw error;
+		}
+		if (!runtime.recordGroupMessage(speaker, reply)) {
+			runtime.endChat("role-interrupted");
+			ended = true;
+			endReason = "role-interrupted";
+			break;
+		}
 		records.push({
 			speaker,
 			reply
@@ -1705,6 +1946,19 @@ function notFound(swarmId) {
 		message: `swarm ${swarmId} not found.`
 	};
 }
+/**
+* Reject a mutating call on a terminated swarm with a tool-level code instead
+* of the runtime's internal error (audit G4-04/G4-06): after `swarm_terminate`
+* no tool may add roles, route messages, block on HITL, or write state.
+* @param runtime - the swarm the call targets.
+* @returns the error value, or undefined when the swarm still accepts changes.
+*/
+function terminatedError(runtime) {
+	return runtime.isTerminated ? {
+		code: "invalid_argument",
+		message: "The swarm is terminated; no further changes are accepted."
+	} : void 0;
+}
 const SPEAKER_SELECTIONS$1 = [
 	"round_robin",
 	"random",
@@ -1813,6 +2067,8 @@ function registerSwarmTools(rootCtx, toolCtx, agent, runtimes, config) {
 				message: "roleName must be 1-64 chars without surrounding whitespace."
 			};
 			const runtime = runtimeFor(swarmIdStr);
+			const terminated = terminatedError(runtime);
+			if (terminated !== void 0) return terminated;
 			try {
 				const childId = await runtime.spawnRole(args.roleName, args.systemPrompt, args.model, exec.signal);
 				return {
@@ -1862,6 +2118,8 @@ function registerSwarmTools(rootCtx, toolCtx, agent, runtimes, config) {
 			if (!isOrchestrator(exec.agent)) return internalError("swarm_send_to requires the live orchestrator agent.");
 			const runtime = runtimes.get(args.swarmId);
 			if (!runtime) return notFound(args.swarmId);
+			const terminated = terminatedError(runtime);
+			if (terminated !== void 0) return terminated;
 			try {
 				await runtime.sendMessage(args.from ?? "orchestrator", args.to, args.content, args.attribution, exec.signal);
 				return {
@@ -1902,6 +2160,8 @@ function registerSwarmTools(rootCtx, toolCtx, agent, runtimes, config) {
 			if (!isOrchestrator(exec.agent)) return internalError("swarm_set_topology requires the live orchestrator agent.");
 			const runtime = runtimes.get(args.swarmId);
 			if (!runtime) return notFound(args.swarmId);
+			const terminated = terminatedError(runtime);
+			if (terminated !== void 0) return terminated;
 			runtime.setTopology(args.mode);
 			return { ok: true };
 		}
@@ -1962,8 +2222,12 @@ function registerSwarmTools(rootCtx, toolCtx, agent, runtimes, config) {
 			if (!isOrchestrator(exec.agent)) return internalError("swarm_interrupt requires the live orchestrator agent.");
 			const runtime = runtimes.get(args.swarmId);
 			if (!runtime) return notFound(args.swarmId);
-			runtime.interrupt(args.roleName);
-			return { ok: true };
+			try {
+				runtime.interrupt(args.roleName);
+				return { ok: true };
+			} catch (error) {
+				return internalError(error instanceof Error ? error.message : String(error));
+			}
 		}
 	})));
 	disposers.push(toolCtx.tools.register(defineTool({
@@ -1982,8 +2246,12 @@ function registerSwarmTools(rootCtx, toolCtx, agent, runtimes, config) {
 			if (!isOrchestrator(exec.agent)) return internalError("swarm_terminate requires the live orchestrator agent.");
 			const runtime = runtimes.get(args.swarmId);
 			if (!runtime) return notFound(args.swarmId);
-			runtime.terminate("orchestrator-terminated");
-			return { ok: true };
+			try {
+				runtime.terminate("orchestrator-terminated");
+				return { ok: true };
+			} catch (error) {
+				return internalError(error instanceof Error ? error.message : String(error));
+			}
 		}
 	})));
 	disposers.push(toolCtx.tools.register(defineTool({
@@ -2066,6 +2334,8 @@ function registerSwarmTools(rootCtx, toolCtx, agent, runtimes, config) {
 			};
 			const runtime = runtimes.get(args.swarmId);
 			if (!runtime) return notFound(args.swarmId);
+			const terminated = terminatedError(runtime);
+			if (terminated !== void 0) return terminated;
 			try {
 				const result = await runtime.askUser(args.question, args.header, args.options, exec.signal);
 				let routedTo;
@@ -2130,6 +2400,8 @@ function registerSwarmTools(rootCtx, toolCtx, agent, runtimes, config) {
 			if (!isOrchestrator(exec.agent)) return internalError("swarm_start_chat requires the live orchestrator agent.");
 			const runtime = runtimes.get(args.swarmId);
 			if (!runtime) return notFound(args.swarmId);
+			const terminated = terminatedError(runtime);
+			if (terminated !== void 0) return terminated;
 			const effective = resolveChatConfig(runtime.config.chat, args);
 			if ("code" in effective) return effective;
 			try {
@@ -2231,6 +2503,8 @@ function registerSwarmTools(rootCtx, toolCtx, agent, runtimes, config) {
 			if (!isOrchestrator(exec.agent)) return internalError("swarm_set_context requires the live orchestrator agent.");
 			const runtime = runtimes.get(args.swarmId);
 			if (!runtime) return notFound(args.swarmId);
+			const terminated = terminatedError(runtime);
+			if (terminated !== void 0) return terminated;
 			if (args.key.trim() !== args.key || args.key.length === 0) return {
 				code: "invalid_argument",
 				message: "key must be non-empty without surrounding whitespace."
@@ -2311,6 +2585,8 @@ function registerSwarmTools(rootCtx, toolCtx, agent, runtimes, config) {
 			if (!isOrchestrator(exec.agent)) return internalError("swarm_memory_write requires the live orchestrator agent.");
 			const runtime = runtimes.get(args.swarmId);
 			if (!runtime) return notFound(args.swarmId);
+			const terminated = terminatedError(runtime);
+			if (terminated !== void 0) return terminated;
 			if (args.text.trim().length === 0) return {
 				code: "invalid_argument",
 				message: "text must be non-empty."
@@ -2452,13 +2728,24 @@ function resolveMemoryDefaults(config) {
 		queryLimit: memory.queryLimit ?? 5
 	};
 }
+/** Validate the configured turn timeout at load, failing loud on misconfiguration. */
+function resolveTurnTimeout(config) {
+	const value = config.turnTimeoutMs ?? 3e5;
+	if (!Number.isInteger(value) || value < 1) throw new Error(`dsh-swarm-panel: turnTimeoutMs must be a positive integer; got ${JSON.stringify(config.turnTimeoutMs)}`);
+	return value;
+}
 /**
-* Every `swarm/*` session event type this plugin appends. The persistence read
-* path refuses a log containing types outside `KNOWN_SESSION_EVENT_TYPES`, and
-* an out-of-repo plugin is absent from that generated catalog by construction,
-* so the plugin registers its own vocabulary for exactly its lifetime.
-* Registration is an effect: unloading the plugin removes the types again,
-* after which a swarm session correctly reads as written-by-a-newer-harness.
+* Every `swarm/*` session event type this plugin appends.
+*
+* The persistence read path refuses an unknown event type unless the stored
+* envelope carries `ignorable: true`, and Harness 0.2.0 rejects event-name
+* registration as its compatibility mechanism while `Session.append` exposes
+* no way for an out-of-repo plugin to write that marker (audit G4-02). The set
+* mutation below is therefore a process-local mitigation, not the supported
+* contract: it keeps swarm sessions readable exactly while this plugin is
+* loaded, so loading the plugin is a hard prerequisite for opening them.
+* Registration is an effect and is reference counted (audit G4-10) so two live
+* instances do not clobber each other.
 */
 const SWARM_EVENT_TYPES = [
 	"swarm/created",
@@ -2477,6 +2764,11 @@ const SWARM_EVENT_TYPES = [
 	"swarm/memory-written"
 ];
 /**
+* Live registrations of {@link registerSwarmEventTypes}. The vocabulary is a
+* process-global set, so the last disposer removes it (audit G4-10).
+*/
+let eventVocabularyRefs = 0;
+/**
 * Register this plugin's event vocabulary with the session persistence read
 * path until the returned disposer runs. `KNOWN_SESSION_EVENT_TYPES` is typed
 * `ReadonlySet` because first-party packages never mutate it; the cast is the
@@ -2484,8 +2776,12 @@ const SWARM_EVENT_TYPES = [
 */
 function registerSwarmEventTypes() {
 	const known = KNOWN_SESSION_EVENT_TYPES;
-	for (const type of SWARM_EVENT_TYPES) known.add(type);
+	if (eventVocabularyRefs === 0) for (const type of SWARM_EVENT_TYPES) known.add(type);
+	eventVocabularyRefs += 1;
 	return () => {
+		eventVocabularyRefs -= 1;
+		if (eventVocabularyRefs > 0) return;
+		eventVocabularyRefs = 0;
 		for (const type of SWARM_EVENT_TYPES) known.delete(type);
 	};
 }
@@ -2544,7 +2840,7 @@ const swarmPanelModelSchema = z.union([z.record(z.string(), z.object({
 		maxRounds: z.number().int().positive().optional(),
 		terminationMessage: z.string().optional(),
 		active: z.boolean(),
-		startedAt: z.string(),
+		startedAt: z.string().optional(),
 		endReason: z.string().optional()
 	}).optional(),
 	latestCheckpointAt: z.string().optional(),
@@ -2556,8 +2852,12 @@ const swarmPanelModelSchema = z.union([z.record(z.string(), z.object({
 * @param config - deployment config (provider, default model).
 */
 function apply(ctx, config = {}) {
-	if (config.enabled === false) return;
+	if (config.enabled === false) {
+		if (config.keepEventVocabularyWhenDisabled === true) ctx.effect(() => registerSwarmEventTypes(), "dsh-swarm-panel.event-vocabulary()");
+		return;
+	}
 	const provider = config.provider ?? "spawn";
+	const turnTimeoutMs = resolveTurnTimeout(config);
 	const checkpointFrequency = resolveCheckpointFrequency(config);
 	const humanInputMode = resolveHumanInputMode(config);
 	const chatDefaults = resolveChatDefaults(config);
@@ -2567,10 +2867,13 @@ function apply(ctx, config = {}) {
 	ctx.inject(["sessionProjections"], (projectionCtx) => {
 		projectionCtx.sessionProjections.register({
 			key: "swarm",
-			schema: swarmPanelModelSchema,
+			stateSchema: swarmPanelModelSchema,
 			init: () => null,
 			apply: applySwarmPanelEvent,
-			view: (state) => state,
+			wire: {
+				viewSchema: swarmPanelModelSchema,
+				view: (state) => state
+			},
 			stateVersion: 2
 		});
 	});
@@ -2585,6 +2888,7 @@ function apply(ctx, config = {}) {
 				humanInputMode,
 				chat: chatDefaults,
 				memory: memoryDefaults,
+				turnTimeoutMs,
 				...defaultModel !== void 0 && (defaultModel.provider !== void 0 || defaultModel.model !== void 0) ? { defaultModel: {
 					...defaultModel.provider !== void 0 ? { provider: defaultModel.provider } : {},
 					...defaultModel.model !== void 0 ? { model: defaultModel.model } : {}
@@ -2631,6 +2935,6 @@ function apply(ctx, config = {}) {
 	}, "dsh-swarm-panel.lifecycle()");
 }
 //#endregion
-export { EngineError, SwarmId, SwarmRuntime, apply, applySwarmPanelEvent, collectSwarmIds, completedRounds, foldSwarmEvents, hydrateSwarmRuntimes, inboundMessages, inject, isValidRoleName, latestCheckpointAt, name, queryMemories, reactivateSwarmRoles, registerSwarmTools, runChatTurns, scoreMemory, selectNextSpeaker, tokenize };
+export { EngineError, RoleTurnError, SwarmId, SwarmRuntime, apply, applySwarmPanelEvent, collectSwarmIds, completedRounds, foldSwarmEvents, hydrateSwarmRuntimes, inboundMessages, inject, isValidRoleName, latestCheckpointAt, name, queryMemories, reactivateSwarmRoles, registerSwarmTools, runChatTurns, scoreMemory, selectNextSpeaker, tokenize };
 
 //# sourceMappingURL=index.js.map

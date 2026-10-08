@@ -12,7 +12,7 @@
  */
 
 import { completedRounds, selectNextSpeaker } from './domain.ts'
-import type { SwarmRuntime } from './runtime.ts'
+import { RoleTurnError, type SwarmRuntime } from './runtime.ts'
 import type { ChatState, SwarmState, SwarmTurnRecord } from './types.ts'
 
 /** Engine failure with a tool-facing error code. */
@@ -169,6 +169,25 @@ export async function runChatTurns(
   options: NextTurnOptions,
   signal: AbortSignal,
 ): Promise<ChatRunOutcome> {
+  // Explicit serialization (audit G4-16): a second concurrent driver of the
+  // same swarm fails loudly instead of interleaving two engines. The host
+  // scheduler already runs these tools exclusively; this makes it a contract.
+  if (!runtime.beginTurn()) {
+    throw new EngineError('swarm: another turn is already in flight for this swarm.', 'unavailable')
+  }
+  try {
+    return await driveChatTurns(runtime, options, signal)
+  } finally {
+    runtime.endTurn()
+  }
+}
+
+/** The turn loop itself; the caller owns the runtime's turn slot. */
+async function driveChatTurns(
+  runtime: SwarmRuntime,
+  options: NextTurnOptions,
+  signal: AbortSignal,
+): Promise<ChatRunOutcome> {
   const records: SwarmTurnRecord[] = []
   let ended = false
   let endReason: string | undefined
@@ -210,8 +229,35 @@ export async function runChatTurns(
     const roundsBefore = completedRounds(chat.turnCount, activeRoles(state).length)
     const speaker = await pickSpeaker(runtime, state, chat, options.speaker, signal)
     const prompt = buildTurnPrompt(chat, state.context, speaker, runtime.config.chat.transcriptWindow)
-    const reply = await runtime.runTurn(speaker, prompt, signal)
-    runtime.recordGroupMessage(speaker, reply)
+    let reply: string
+    try {
+      reply = await runtime.runTurn(speaker, prompt, signal)
+    } catch (error) {
+      if (runtime.isTerminated) {
+        // Terminated mid-turn: report the stop reason the fold already carries.
+        runtime.endChat('swarm-terminated')
+        ended = true
+        endReason = 'swarm-terminated'
+        break
+      }
+      if (error instanceof RoleTurnError) {
+        // The speaker was interrupted, or never answered (audit G4-08): end the
+        // chat with a reason instead of a misleading internal_error.
+        const reason = error.reason === 'timeout' ? 'turn-timeout' : 'role-interrupted'
+        runtime.endChat(reason)
+        ended = true
+        endReason = reason
+        break
+      }
+      throw error
+    }
+    if (!runtime.recordGroupMessage(speaker, reply)) {
+      // The role exited between the reply and the durable append (audit G4-08).
+      runtime.endChat('role-interrupted')
+      ended = true
+      endReason = 'role-interrupted'
+      break
+    }
     records.push({ speaker, reply })
 
     const after = runtime.state().chat!

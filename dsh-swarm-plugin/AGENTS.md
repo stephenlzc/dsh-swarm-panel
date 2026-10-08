@@ -29,13 +29,25 @@ tests/
 - Lifecycle managed through `ctx.effect()`; tools registered on the Orchestrator agent's tool scope.
 - Checkpoint events (`swarm/checkpoint`) enable cold resume by replaying session events.
 
-## Key DSH seams used
+## Key DSH seams used (Harness 0.2.0-rc.2)
 
-- `ctx.agents` — to create child agents and identify roots
-- `ctx.sessions` — to append swarm event records
-- `ctx.tools` — to register Orchestrator tools
-- `ctx.subagents.followup()` — for relay routing with `senderSessionId` attribution
-- `ctx.effect()` — for lifecycle management
+- `ctx.agents` — to identify roots. `ctx.agents.create()` no longer infers
+  ownership from the calling context: pass `parentAgent` to create a child (the
+  plugin itself only spawns through `ctx.subagents`, which passes it).
+- `ctx.sessions` / `session.append()` — to append swarm event records.
+- `session.snapshotEvents()` — to read the log for folds and cold resume. The
+  synchronous history readers are deprecated in 0.2.0; new first-party callers
+  are expected to use projections instead. This out-of-repo plugin keeps the
+  readers because its fold is the projection it cannot rebuild retroactively.
+- `ctx.tools` — to register Orchestrator tools.
+- `@deepseek-ai/dsh-subagent/internal` `queueHostSubagentPrompt()` — host-only
+  relay delivery with an explicit `senderSessionId` attribution. The public
+  `ctx.subagents.sendMessage()` replaces the removed `followup()` but derives
+  attribution from the exact live sender, which cannot express peer routes.
+- `ctx.userQuestions.ask()` — answerers register on the `user-questions/request`
+  event; continuable children also require `@deepseek-ai/dsh-session-query` in
+  the host composition.
+- `ctx.effect()` — for lifecycle management.
 
 ## Module naming
 

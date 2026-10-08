@@ -17,9 +17,18 @@ This file is the maintainer checklist for `dsh-swarm-panel`. It separates what i
 | GitHub repository | public remote and Actions result | Passes: `stephenlzc/dsh-swarm-panel` is public and `main` is green |
 | npm publication | published package install and `dsh plugin add` | Tarball install passed in temporary `tarball`, `web`, and `headless` profiles; npm publication remains intentionally pending |
 
+## Harness 0.2.0-rc.2 re-verification (2026-10-08)
+
+- The supported peer/workspace target moved to Harness tag `dsh-v0.2.0-rc.2` (the runtime shipped by the current desktop app). When mounting this checkout into that workspace, add `plugins/*` to its `pnpm-workspace.yaml`; 0.2.0 no longer ships that glob.
+- TypeScript host + client checks and the 93 keyless tests pass against published `0.2.0-rc.2` packages.
+- `tsdown` builds; the emitted host and client bundles smoke-load against the 0.2.0 runtime (the client bundle routes navigation through `uiWorkspace.openSession`).
+- The host-composed browser E2E passed from a `dsh-v0.2.0-rc.2` checkout (real web shell + chromium); the test needed four 0.2.0 fixture/scaffold fixes documented in the compatibility note.
+- Still to repeat before a release: the real-API cold-resume test (needs `DEEPSEEK_API_KEY`) and the tarball install into a temporary profile.
+- Full breakage/repair list and reinstall guidance: [harness-0.2-compatibility.md](harness-0.2-compatibility.md).
+
 ## Before tagging
 
-1. Confirm the supported DeepSeek Harness version and update the peer ranges in `dsh-swarm-plugin/package.json`.
+1. Confirm the supported DeepSeek Harness version and update the peer ranges in `dsh-swarm-plugin/package.json` (current target: the `0.2.x` line, verified at `^0.2.0-rc.2`).
 2. Run the keyless gates from a clean checkout.
 3. Run the real-API cold-resume test with the key supplied through the environment or DSH credentials. Never commit the key or place it in a screenshot, log, or recording.
 4. Run `npm pack --dry-run --json` and inspect the final file list.
