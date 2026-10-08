@@ -81,11 +81,13 @@ session を作成し、Orchestrator に swarm の作成を依頼して、Chat �
 | DeepSeek Harness | `0.2.0-rc.2` workspace API と互換リリース |
 | Node.js | `22.19+` または `24+` |
 | Browser | DeepSeek Harness `web` profile |
-| Package | `dsh-swarm-panel@0.2.0` |
+| Package | `dsh-swarm-panel@1.0.1` |
+
+> **1.0.1 リリース** — DeepSeek Harness `0.2.0-rc.2` への互換対応と、監査で見つかった 16 件の堅牢性修正を含みます。全項目とアップグレード手順は [CHANGELOG](CHANGELOG.md) を参照してください。
 
 ## 検証状況
 
-- keyless plugin test 84 件と real-API cold-resume test 1 件が成功しています。
+- keyless plugin test 93 件が成功しています (real-API cold-resume はキー未設定のためスキップ)。
 - 実際の Web shell による host-composed browser E2E が成功しています。
 - host/client の TypeScript 検査と tarball インストール検証が成功しています。
 - message inspector、route/Agent filter、検索の空状態、Live pause/resume、HITL、child-session navigation、キーボード共存、390×844 レイアウトを手動確認しています。

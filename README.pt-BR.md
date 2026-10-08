@@ -81,11 +81,13 @@ Crie ou abra uma session, peça ao Orchestrator para criar um swarm e abra a aba
 | DeepSeek Harness | `0.2.0-rc.2` workspace API e versões compatíveis |
 | Node.js | `22.19+` ou Node `24+` |
 | Browser | DeepSeek Harness `web` profile |
-| Package | `dsh-swarm-panel@0.2.0` |
+| Package | `dsh-swarm-panel@1.0.1` |
+
+> **Versão 1.0.1** — compatibilidade com o DeepSeek Harness `0.2.0-rc.2` e 16 correções de robustez da auditoria. Veja o [CHANGELOG](CHANGELOG.md) para a lista completa e as notas de atualização.
 
 ## Status da verificação
 
-- 84 testes do plugin sem chave e 1 teste real-API de cold-resume passaram.
+- 93 testes do plugin sem chave passaram (o teste real-API de cold-resume é ignorado sem chave).
 - O browser E2E composto pelo host passou no Web shell real.
 - As verificações TypeScript de host/client e a instalação do tarball passaram.
 - Foram verificados manualmente o inspector, filtros de route/Agent, estado vazio de busca, Live pause/resume, HITL, navegação de child session, coexistência do teclado e viewport 390×844.

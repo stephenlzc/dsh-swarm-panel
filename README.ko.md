@@ -81,11 +81,13 @@ session을 만들고 Orchestrator에게 swarm 생성을 요청한 뒤 Chat과 Tr
 | DeepSeek Harness | `0.2.0-rc.2` workspace API 및 호환 릴리스 |
 | Node.js | `22.19+` 또는 `24+` |
 | Browser | DeepSeek Harness `web` profile |
-| Package | `dsh-swarm-panel@0.2.0` |
+| Package | `dsh-swarm-panel@1.0.1` |
+
+> **1.0.1 릴리스** — DeepSeek Harness `0.2.0-rc.2` 호환성과 감사에서 발견된 16개 견고성 수정이 포함되었습니다. 전체 목록과 업그레이드 안내는 [CHANGELOG](CHANGELOG.md)를 참고하세요.
 
 ## 검증 상태
 
-- keyless 플러그인 테스트 84개와 real-API cold-resume 테스트 1개가 통과했습니다.
+- keyless 플러그인 테스트 93개가 통과했습니다 (real-API cold-resume은 키가 없으면 건너뜁니다).
 - 실제 Web shell의 host-composed browser E2E가 통과했습니다.
 - host/client TypeScript 검사와 tarball 설치 검증이 통과했습니다.
 - message inspector, route/Agent filter, 검색 빈 상태, Live pause/resume, HITL, child-session navigation, 키보드 공존, 390×844 레이아웃을 수동 확인했습니다.

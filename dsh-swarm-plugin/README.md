@@ -232,7 +232,7 @@ The browser half ships as `dsh-swarm-panel/client` (discovered through the packa
 
 ## Compatibility and development
 
-The current package targets the DeepSeek Harness `0.2.x` release line (`0.2.0-rc.2` and compatible releases — the runtime shipped by the current desktop app) and Node.js `22.19+` or `24+`. Runtime consumers install the published package through the Harness profile; source-level typecheck and tests require a matching Harness workspace at tag `dsh-v0.2.0-rc.2` because only development dependencies use `workspace:*` packages. That workspace must list `plugins/*` under `packages:` in `pnpm-workspace.yaml` (0.2.0 no longer ships that glob). Runtime peer ranges in `package.json` resolve to the public Harness packages.
+The current package targets the DeepSeek Harness `0.2.x` release line (`0.2.0-rc.2` and compatible releases — the runtime shipped by the current desktop app) and Node.js `22.19+` or `24+`. Runtime consumers install the published package through the Harness profile; source-level typecheck and tests require a matching Harness workspace at tag `dsh-v0.2.0-rc.2` because only development dependencies use `workspace:*` packages. That workspace must list `plugins/*` under `packages:` in `pnpm-workspace.yaml` (0.2.0 no longer ships that glob). Runtime peer ranges in `package.json` resolve to the public Harness packages. Release history lives in the [changelog](https://github.com/stephenlzc/dsh-swarm-panel/blob/main/CHANGELOG.md); the current release is **1.0.1**.
 
 From the plugin directory in a matching Harness workspace:
 

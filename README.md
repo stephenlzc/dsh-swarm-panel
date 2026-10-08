@@ -102,9 +102,11 @@ The example asks one Orchestrator to spawn planner, security, and correctness ro
 | DeepSeek Harness | `0.2.0-rc.2` workspace API and compatible releases |
 | Node.js | `22.19+` or Node `24+` |
 | Browser | DeepSeek Harness `web` profile |
-| Package | `dsh-swarm-panel@0.2.0` |
+| Package | `dsh-swarm-panel@1.0.1` |
 
 The package targets the Harness `0.2.x` release line (`0.2.0-rc.2` desktop/web runtime). Keep the plugin and Harness versions aligned when upgrading; the marketplace/Harness desktop `1.0` label currently ships the `0.2.0-rc.2` runtime.
+
+> **Release 1.0.1** — DeepSeek Harness `0.2.0-rc.2` compatibility plus 16 robustness fixes from the adversarial audit. See the [changelog](CHANGELOG.md) for the full list and the upgrade notes.
 
 ## Verification status
 

@@ -1,7 +1,7 @@
 {
   "name": "dsh-swarm-panel",
   "description": "dsh-swarm-panel: DSH Agent Swarm plugin with Conversation Flow observability, dynamic topology, cold resume, and layered HITL",
-  "version": "0.2.0",
+  "version": "1.0.1",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/stephenlzc/dsh-swarm-panel.git",

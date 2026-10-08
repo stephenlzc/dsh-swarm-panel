@@ -26,6 +26,12 @@ This file is the maintainer checklist for `dsh-swarm-panel`. It separates what i
 - Still to repeat before a release: the real-API cold-resume test (needs `DEEPSEEK_API_KEY`) and the tarball install into a temporary profile.
 - Full breakage/repair list and reinstall guidance: [harness-0.2-compatibility.md](harness-0.2-compatibility.md).
 
+## Release v1.0.1 (2026-10-08)
+
+- 内容：Harness `0.2.0-rc.2` 兼容升级 + 16 项稳健性修复（详见 [CHANGELOG](../CHANGELOG.md)）。
+- 已复验：host/client `tsc` 0 error、`vitest` 93 passed / 2 skipped、CI 路径 `tsdown` 构建与提交产物逐字节一致、真实 web shell host E2E（无 shim）1 passed。
+- 待办：real-API cold-resume（需 key）与 tarball 安装复测。
+
 ## Before tagging
 
 1. Confirm the supported DeepSeek Harness version and update the peer ranges in `dsh-swarm-plugin/package.json` (current target: the `0.2.x` line, verified at `^0.2.0-rc.2`).

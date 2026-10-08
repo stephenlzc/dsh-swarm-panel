@@ -216,7 +216,7 @@ config:
 
 ## 兼容性与开发
 
-当前包面向 DeepSeek Harness `0.2.x` 发布线（`0.2.0-rc.2` 及兼容版本——即当前桌面版内置的运行时），以及 Node.js `22.19+` 或 `24+`。运行时消费者通过 Harness profile 安装已发布包；源码级类型检查和测试需要匹配 tag `dsh-v0.2.0-rc.2` 的 Harness 工作区，只有开发依赖使用 `workspace:*`。该工作区必须在 `pnpm-workspace.yaml` 的 `packages:` 下声明 `plugins/*`（0.2.0 不再自带该 glob）。
+当前包面向 DeepSeek Harness `0.2.x` 发布线（`0.2.0-rc.2` 及兼容版本——即当前桌面版内置的运行时），以及 Node.js `22.19+` 或 `24+`。运行时消费者通过 Harness profile 安装已发布包；源码级类型检查和测试需要匹配 tag `dsh-v0.2.0-rc.2` 的 Harness 工作区，只有开发依赖使用 `workspace:*`。该工作区必须在 `pnpm-workspace.yaml` 的 `packages:` 下声明 `plugins/*`（0.2.0 不再自带该 glob）。版本历史见 [CHANGELOG](https://github.com/stephenlzc/dsh-swarm-panel/blob/main/CHANGELOG.md)，当前版本为 **1.0.1**。
 
 在匹配的 Harness 工作区中运行：
 

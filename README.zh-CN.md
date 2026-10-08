@@ -83,11 +83,13 @@ dsh web
 | DeepSeek Harness | `0.2.0-rc.2` workspace API 及兼容版本 |
 | Node.js | `22.19+` 或 Node `24+` |
 | Browser | DeepSeek Harness `web` profile |
-| Package | `dsh-swarm-panel@0.2.0` |
+| Package | `dsh-swarm-panel@1.0.1` |
+
+> **1.0.1 版本** — 兼容 DeepSeek Harness `0.2.0-rc.2`，并修复对抗性审查发现的 16 项稳健性缺陷。完整清单与升级须知见 [CHANGELOG](CHANGELOG.md)。
 
 ## 验证状态
 
-- 84 个无密钥插件测试通过；真实 API cold-resume 测试也通过 1 个测试。
+- 93 个无密钥插件测试通过（需要 key 的真实 API cold-resume 测试在无 key 时跳过）。
 - 宿主合成的真实 Web shell 浏览器 E2E 通过。
 - Host 和 client TypeScript 检查通过。
 - 已手动验证消息详情、路由和 Agent 筛选、搜索空状态、清除筛选、Live 暂停/恢复、Human input、子会话导航、键盘共存和 390×844 布局。
