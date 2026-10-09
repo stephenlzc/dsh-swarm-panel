@@ -80,7 +80,13 @@ jobs:
         run: |
           mkdir -p plugins
           rm -rf plugins/dsh-swarm-panel
-          ln -s "$GITHUB_WORKSPACE/dsh-swarm-plugin" plugins/dsh-swarm-panel
+          # Copy, do not symlink: pnpm only materializes node_modules and a
+          # lockfile importer for workspace packages that live inside the
+          # workspace root. A symlink to $GITHUB_WORKSPACE leaves the package
+          # without node_modules and with a stale importer, so the later
+          # `CI=true pnpm run ...` fails verify-deps-before-run with
+          # ERR_PNPM_OUTDATED_LOCKFILE (and tsc cannot resolve @types/node).
+          cp -R "$GITHUB_WORKSPACE/dsh-swarm-plugin" plugins/dsh-swarm-panel
           # Harness 0.2.0 dropped two things this standalone checkout needs:
           #   * the plugins/* workspace glob, so the mounted plugin joins the
           #     workspace at all (its development dependencies use workspace:*);

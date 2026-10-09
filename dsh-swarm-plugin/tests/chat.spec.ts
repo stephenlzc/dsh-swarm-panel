@@ -10,9 +10,10 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
@@ -27,8 +28,52 @@ import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import * as SubagentSpawn from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import { UserQuestionService } from '@deepseek-ai/dsh-user-questions'
 import type { AskUserQuestionAnswer } from '@deepseek-ai/dsh-user-questions'
-import { MockAdapter, textResponse } from '../../../deepseek-harness/packages/core/agent-loop/tests/mock-adapter.ts'
 import * as agentSwarm from '../src/index.ts'
+
+/**
+ * Locate the DeepSeek Harness checkout that owns the scripted test double.
+ *
+ * Two layouts resolve so the same spec runs from the plugin checkout and from a
+ * package mounted at `<harness>/plugins/dsh-swarm-panel`, with no fixture
+ * symlink (CI has none, and the previous hard-coded relative path only ever
+ * worked because a symlink happened to exist):
+ *  - sibling: `<parent>/dsh-swarm-panel/dsh-swarm-plugin/tests` → `<parent>/deepseek-harness`
+ *  - mounted: `<harness>/plugins/dsh-swarm-panel/tests`         → `<harness>`
+ * `DSH_HARNESS_ROOT` overrides both.
+ */
+function resolveHarnessRoot(): URL {
+  const override = process.env.DSH_HARNESS_ROOT
+  const candidates = override !== undefined && override.length > 0
+    ? [new URL(override.endsWith('/') ? override : `${override}/`)]
+    : [new URL('../../../deepseek-harness/', import.meta.url), new URL('../../../', import.meta.url)]
+  for (const candidate of candidates) {
+    if (existsSync(fileURLToPath(new URL('packages/core/agent-loop/tests/mock-adapter.ts', candidate)))) {
+      return candidate
+    }
+  }
+  throw new Error(
+    `chat.spec.ts cannot locate the DeepSeek Harness checkout; tried ${candidates.map(candidate => candidate.href).join(', ')}. `
+    + 'Set DSH_HARNESS_ROOT to a Harness checkout that contains packages/core/agent-loop/tests/mock-adapter.ts.',
+  )
+}
+
+// Dynamic import keeps this spec layout-independent; the double lives in the
+// Harness test tree, whose depth relative to this file varies per layout.
+const { MockAdapter, textResponse } = await import(
+  new URL('packages/core/agent-loop/tests/mock-adapter.ts', resolveHarnessRoot()).href
+) as unknown as MockAdapterModule
+
+/** The surface this spec uses from the Harness test double. */
+interface MockAdapterModule {
+  MockAdapter: new (script: readonly ScriptedResponse[]) => ScriptedAdapter
+  textResponse: (text: string) => ScriptedResponse
+}
+
+/** One scripted response entry: a generator function over the request. */
+type ScriptedResponse = (options: GenerateOptions) => unknown
+
+/** The Harness adapter shape the scripted double implements. */
+type ScriptedAdapter = Parameters<Context['llm']['registerAdapter']>[1]
 
 const roots: string[] = []
 const contexts: Context[] = []
@@ -51,7 +96,7 @@ function requestText(options: GenerateOptions): string {
  * Scripted adapter whose group-chat replies name their speaker. Non-chat calls
  * (spawn prompts, orchestrator settlement turns) answer 'ok'.
  */
-function chatAdapter(marker?: string): MockAdapter {
+function chatAdapter(marker?: string): ScriptedAdapter {
   const entry = (options: GenerateOptions) => {
     const speaker = /You are "([^"]+)"\. Speak to the group/.exec(requestText(options))?.[1]
     if (speaker === undefined) return textResponse('ok')
@@ -61,7 +106,7 @@ function chatAdapter(marker?: string): MockAdapter {
 }
 
 /** Boot the full stack with the scripted adapter as the `mock` provider. */
-async function harness(root: string, adapter: MockAdapter, config?: agentSwarm.Config): Promise<Context> {
+async function harness(root: string, adapter: ScriptedAdapter, config?: agentSwarm.Config): Promise<Context> {
   const ctx = new Context()
   contexts.push(ctx)
   await mountAgentLoopTestDependencies(ctx)
