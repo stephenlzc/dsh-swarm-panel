@@ -30,9 +30,12 @@ resolved (or explicitly dispositioned).
   profile instead:
   ```bash
   # The desktop app launcher is not on PATH; adjust the path if needed.
+  # Download the asset first: adding a release URL directly fails pnpm's
+  # tarball-integrity check (ERR_PNPM_MISSING_TARBALL_INTEGRITY).
   DSH="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
-  "$DSH" plugin --profile dswarm add \
+  curl -sSL -o /tmp/dsh-swarm-panel-1.0.1.tgz \
     https://github.com/stephenlzc/dsh-swarm-panel/releases/download/v1.0.1/dsh-swarm-panel-1.0.1.tgz
+  "$DSH" plugin --profile dswarm add /tmp/dsh-swarm-panel-1.0.1.tgz
   "$DSH" --profile dswarm --dump-config | grep -A2 swarm
   rm -rf ~/.dsh/profiles/dswarm   # when done
   ```

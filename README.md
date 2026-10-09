@@ -47,9 +47,12 @@ The plugin runs inside a compatible DeepSeek Harness installation.
 > isolated profile with the app's bundled launcher instead:
 >
 > ```bash
-> DSH="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
-> "$DSH" plugin --profile dswarm add \
+> # Download the released asset first: adding the URL directly fails pnpm's
+> # tarball-integrity check (ERR_PNPM_MISSING_TARBALL_INTEGRITY).
+> curl -sSL -o /tmp/dsh-swarm-panel-1.0.1.tgz \
 >   https://github.com/stephenlzc/dsh-swarm-panel/releases/download/v1.0.1/dsh-swarm-panel-1.0.1.tgz
+> DSH="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
+> "$DSH" plugin --profile dswarm add /tmp/dsh-swarm-panel-1.0.1.tgz
 > "$DSH" --profile dswarm --dump-config | grep -A2 swarm
 > "$DSH" --profile dswarm
 > ```
@@ -75,10 +78,14 @@ Create or open a session, ask the Orchestrator to create a swarm, and open the *
 Each release publishes the packed plugin as a tarball asset:
 
 ```bash
-dsh plugin --profile web add \
+curl -sSL -o /tmp/dsh-swarm-panel-1.0.1.tgz \
   https://github.com/stephenlzc/dsh-swarm-panel/releases/download/v1.0.1/dsh-swarm-panel-1.0.1.tgz
+dsh plugin --profile web add /tmp/dsh-swarm-panel-1.0.1.tgz
 dsh web
 ```
+
+Adding a release URL directly (`dsh plugin … add https://…tgz`) fails pnpm's
+integrity check; download the asset first, or use the GitHub spec below.
 
 ### Directly from GitHub
 

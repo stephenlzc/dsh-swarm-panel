@@ -46,9 +46,12 @@
 > **用桌面版？** 它的 CLI 默认不在 `PATH` 上，且**保留的 `desktop` profile 不能装第三方插件**（原因见 [CHANGELOG](CHANGELOG.md) 的升级须知）。请用 app 自带的 launcher 装到独立 profile：
 >
 > ```bash
-> DSH="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
-> "$DSH" plugin --profile dswarm add \
+> # 先下载发布资产：直接把 URL 交给 add 会因 pnpm 的 tarball 完整性校验失败
+> # （ERR_PNPM_MISSING_TARBALL_INTEGRITY）。
+> curl -sSL -o /tmp/dsh-swarm-panel-1.0.1.tgz \
 >   https://github.com/stephenlzc/dsh-swarm-panel/releases/download/v1.0.1/dsh-swarm-panel-1.0.1.tgz
+> DSH="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
+> "$DSH" plugin --profile dswarm add /tmp/dsh-swarm-panel-1.0.1.tgz
 > "$DSH" --profile dswarm --dump-config | grep -A2 swarm
 > "$DSH" --profile dswarm
 > ```
@@ -60,10 +63,13 @@
 每个 Release 都附带打包好的 tarball：
 
 ```bash
-dsh plugin --profile web add \
+curl -sSL -o /tmp/dsh-swarm-panel-1.0.1.tgz \
   https://github.com/stephenlzc/dsh-swarm-panel/releases/download/v1.0.1/dsh-swarm-panel-1.0.1.tgz
+dsh plugin --profile web add /tmp/dsh-swarm-panel-1.0.1.tgz
 dsh web
 ```
+
+把 Release URL 直接交给 add（`dsh plugin … add https://…tgz`）会因 pnpm 完整性校验失败，请先下载资产，或使用下面的 GitHub spec。
 
 ### npm 发布后（当前尚未发布）
 
