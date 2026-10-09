@@ -29,10 +29,17 @@ pnpm dsh --profile headless --patch ./examples/coding-squad/cordis.yml \
 ## 安装
 
 ```bash
-# Install via dsh plugin command
+# 从 GitHub Release 安装（当前可用，无需 npm 发布）。
+# 桌面版的 launcher 不在 PATH 上；路径按需调整，`dswarm` 可换成任意 profile 名，
+# 切勿使用 `desktop`。
+DSH="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
+"$DSH" plugin --profile dswarm add \
+  https://github.com/stephenlzc/dsh-swarm-panel/releases/download/v1.0.1/dsh-swarm-panel-1.0.1.tgz
+
+# npm 发布后（dsh 在 PATH 上时）
 dsh plugin --profile web add dsh-swarm-panel
 
-# Or for local development from this checkout
+# 本地开发
 dsh plugin --profile web add file:./dsh-swarm-plugin
 ```
 

@@ -29,8 +29,11 @@ resolved (or explicitly dispositioned).
   it — only restoring the profile directory does. Verify plugins in an isolated
   profile instead:
   ```bash
-  dsh plugin --profile dswarm add file:<checkout>/dsh-swarm-plugin
-  dsh --profile dswarm --dump-config | grep -A2 swarm
+  # The desktop app launcher is not on PATH; adjust the path if needed.
+  DSH="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
+  "$DSH" plugin --profile dswarm add \
+    https://github.com/stephenlzc/dsh-swarm-panel/releases/download/v1.0.1/dsh-swarm-panel-1.0.1.tgz
+  "$DSH" --profile dswarm --dump-config | grep -A2 swarm
   rm -rf ~/.dsh/profiles/dswarm   # when done
   ```
 - Sessions written by this plugin contain `swarm/*` events. They are readable

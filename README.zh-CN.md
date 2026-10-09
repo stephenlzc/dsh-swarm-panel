@@ -43,6 +43,30 @@
 
 ### npm 发布后
 
+> **用桌面版？** 它的 CLI 默认不在 `PATH` 上，且**保留的 `desktop` profile 不能装第三方插件**（原因见 [CHANGELOG](CHANGELOG.md) 的升级须知）。请用 app 自带的 launcher 装到独立 profile：
+>
+> ```bash
+> DSH="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
+> "$DSH" plugin --profile dswarm add \
+>   https://github.com/stephenlzc/dsh-swarm-panel/releases/download/v1.0.1/dsh-swarm-panel-1.0.1.tgz
+> "$DSH" --profile dswarm --dump-config | grep -A2 swarm
+> "$DSH" --profile dswarm
+> ```
+>
+> 卸载：`rm -rf ~/.dsh/profiles/dswarm`。
+
+### 从 GitHub Release 安装（当前可用，无需 npm）
+
+每个 Release 都附带打包好的 tarball：
+
+```bash
+dsh plugin --profile web add \
+  https://github.com/stephenlzc/dsh-swarm-panel/releases/download/v1.0.1/dsh-swarm-panel-1.0.1.tgz
+dsh web
+```
+
+### npm 发布后（当前尚未发布）
+
 ```bash
 dsh plugin --profile web add dsh-swarm-panel
 dsh web

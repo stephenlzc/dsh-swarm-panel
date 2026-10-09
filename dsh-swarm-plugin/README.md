@@ -29,7 +29,14 @@ The 14 tools are auto-installed on root agents only. Children get no swarm surfa
 ## Installation
 
 ```bash
-# Install via dsh plugin command after the npm release
+# From a GitHub Release (works today, no npm publication needed).
+# The desktop app's launcher is not on PATH; adjust the path if needed, and
+# replace `dswarm` with any profile name you like — never use `desktop`.
+DSH="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
+"$DSH" plugin --profile dswarm add \
+  https://github.com/stephenlzc/dsh-swarm-panel/releases/download/v1.0.1/dsh-swarm-panel-1.0.1.tgz
+
+# After the npm release, with `dsh` on PATH
 dsh plugin --profile web add dsh-swarm-panel
 
 # Or for local development from this checkout

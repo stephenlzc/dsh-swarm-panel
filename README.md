@@ -39,7 +39,25 @@ The tour moves through the desktop overview, selected-message inspector, and 390
 
 ## Quick start
 
-The plugin runs inside a compatible DeepSeek Harness installation. Install Harness first, then install this package into the `web` profile.
+The plugin runs inside a compatible DeepSeek Harness installation.
+
+> **Using the desktop app?** Its CLI is not on `PATH` by default, and the reserved
+> `desktop` profile must not receive third-party plugins (see the
+> [changelog](CHANGELOG.md#️-upgrade-notes-read-before-installing)). Install into an
+> isolated profile with the app's bundled launcher instead:
+>
+> ```bash
+> DSH="/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh"
+> "$DSH" plugin --profile dswarm add \
+>   https://github.com/stephenlzc/dsh-swarm-panel/releases/download/v1.0.1/dsh-swarm-panel-1.0.1.tgz
+> "$DSH" --profile dswarm --dump-config | grep -A2 swarm
+> "$DSH" --profile dswarm
+> ```
+>
+> Remove it again with `rm -rf ~/.dsh/profiles/dswarm`. Everything below assumes a
+> CLI Harness install with `dsh` on your `PATH`.
+
+Install Harness first, then install this package into the `web` profile.
 
 ### After npm publication
 
@@ -48,9 +66,19 @@ dsh plugin --profile web add dsh-swarm-panel
 dsh web
 ```
 
-The GitHub repository is the current distribution source until the npm package is published; use the checkout instructions below today.
+The GitHub repository is the current distribution source until the npm package is published; use the release tarball or the checkout instructions below today.
 
 Create or open a session, ask the Orchestrator to create a swarm, and open the **Conversation Flow** tab next to Chat and Trajectory.
+
+### From a GitHub Release (works today, no npm needed)
+
+Each release publishes the packed plugin as a tarball asset:
+
+```bash
+dsh plugin --profile web add \
+  https://github.com/stephenlzc/dsh-swarm-panel/releases/download/v1.0.1/dsh-swarm-panel-1.0.1.tgz
+dsh web
+```
 
 ### Directly from GitHub
 
