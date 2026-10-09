@@ -128,6 +128,13 @@ jobs:
           pnpm exec tsdown --env.DSH_BUILD_FACE host
           node --max-old-space-size=4096 ./node_modules/typescript/bin/tsc -b tsconfig.client.json
           pnpm exec tsdown --env.DSH_BUILD_FACE client
+      - name: Build the Harness native system addon
+        working-directory: harness
+        # Session persistence takes an OS file lock through the Node-API flock
+        # addon (native/system). Without the host addon every persisted test
+        # fails with "Cannot find module .../system.node". This is the same
+        # build the Harness repository runs first in its own "test" script.
+        run: pnpm run build:native-system
       - name: Typecheck plugin
         working-directory: harness
         run: CI=true pnpm --filter dsh-swarm-panel run typecheck
