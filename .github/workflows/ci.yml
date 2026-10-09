@@ -114,19 +114,20 @@ jobs:
         # ranges intentionally differ from the Harness repository's lockfile
         # importer. The ephemeral CI workspace may resolve that importer afresh.
         run: pnpm install --no-frozen-lockfile
-      - name: Verify the mounted plugin was installed
+      - name: Build Harness workspace libraries
         working-directory: harness
+        # Harness 0.2.0 package exports resolve to BUILT files
+        # (lib/types/index.d.ts for types, lib/index.js for runtime). A fresh
+        # checkout has neither, so the plugin's tsc would fail with TS2307
+        # ("Cannot find module '@deepseek-ai/dsh-session'") and vitest would
+        # fail to resolve the workspace packages at runtime. Build both faces
+        # the way the Harness repository itself does (root "build:lib"), minus
+        # the desktop/web bundling this lane does not exercise.
         run: |
-          echo "--- plugin node_modules ---"
-          ls -la plugins/dsh-swarm-panel/node_modules 2>&1 | head -20
-          echo "--- @deepseek-ai links ---"
-          ls -la plugins/dsh-swarm-panel/node_modules/@deepseek-ai 2>&1 | head -20
-          echo "--- modules manifest ---"
-          head -25 plugins/dsh-swarm-panel/node_modules/.modules.yaml 2>&1
-          echo "--- root @deepseek-ai (hoist fallback) ---"
-          ls node_modules/@deepseek-ai 2>&1 | head -20
-          echo "--- pnpm view of the project ---"
-          pnpm --filter dsh-swarm-panel list --depth -1 2>&1 | head -25
+          node --max-old-space-size=4096 ./node_modules/typescript/bin/tsc -b tsconfig.host.json
+          pnpm exec tsdown --env.DSH_BUILD_FACE host
+          node --max-old-space-size=4096 ./node_modules/typescript/bin/tsc -b tsconfig.client.json
+          pnpm exec tsdown --env.DSH_BUILD_FACE client
       - name: Typecheck plugin
         working-directory: harness
         run: CI=true pnpm --filter dsh-swarm-panel run typecheck
